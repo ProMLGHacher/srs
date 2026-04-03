@@ -3,6 +3,36 @@ import { useEffect, useRef, useState } from 'react';
 
 const ICE = [{ urls: 'stun:stun.l.google.com:19302' }];
 
+/** Только H.264 для video (SRS SFU без перекодирования под другие кодеки). */
+function h264VideoCodecsList() {
+  try {
+    const fromSender = RTCRtpSender.getCapabilities?.('video')?.codecs ?? [];
+    const fromReceiver = RTCRtpReceiver.getCapabilities?.('video')?.codecs ?? [];
+    const seen = new Set();
+    const out = [];
+    for (const c of [...fromSender, ...fromReceiver]) {
+      if (!c || c.mimeType.toLowerCase() !== 'video/h264') continue;
+      const key = `${c.sdpFmtpLine || ''}|${c.clockRate}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(c);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function applyH264VideoOnly(transceiver) {
+  const codecs = h264VideoCodecsList();
+  if (!codecs.length || !transceiver?.setCodecPreferences) return;
+  try {
+    transceiver.setCodecPreferences(codecs);
+  } catch (e) {
+    console.warn('H.264 setCodecPreferences:', e);
+  }
+}
+
 function waitIceGathering(pc) {
   if (pc.iceGatheringState === 'complete') return Promise.resolve();
   return new Promise((resolve) => {
@@ -94,7 +124,8 @@ export default function Room() {
       const pc = new RTCPeerConnection({ iceServers: ICE });
       subsRef.current.set(remotePeer, pc);
       pc.addTransceiver('audio', { direction: 'recvonly' });
-      pc.addTransceiver('video', { direction: 'recvonly' });
+      const videoRx = pc.addTransceiver('video', { direction: 'recvonly' });
+      applyH264VideoOnly(videoRx);
 
       pc.ontrack = (ev) => {
         const [stream] = ev.streams;
@@ -195,6 +226,8 @@ export default function Room() {
       const pc = new RTCPeerConnection({ iceServers: ICE });
       publishPcRef.current = pc;
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+      const videoTx = pc.getTransceivers().find((tr) => tr.sender?.track?.kind === 'video');
+      if (videoTx) applyH264VideoOnly(videoTx);
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
