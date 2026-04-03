@@ -1,0 +1,29 @@
+services:
+  srs:
+    image: ossrs/srs:5
+    ports:
+      - "1985:1985"
+      - "8080:8080"
+      - "8000:8000/udp"
+    volumes:
+      - ./srs/rtc.conf:/usr/local/srs/conf/docker.conf:ro
+    environment:
+      CANDIDATE: ${SRS_CANDIDATE_IP:-192.168.1.248}
+    networks: [srsnet]
+
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3080:3001"
+    depends_on:
+      - srs
+    environment:
+      # Тот же сетевой namespace, что у srs — без Docker DNS и без 502 на WHIP/WHEP.
+      SRS_HTTP: http://srs:1985
+      SRS_EIP: ${SRS_CANDIDATE_IP:-192.168.1.248}
+    networks: [srsnet]
+
+networks:
+  srsnet:
+    driver: bridge
