@@ -49,18 +49,35 @@ function hasH264InCodecList(codecs) {
   return codecs.some((c) => c?.mimeType?.toLowerCase() === 'video/h264');
 }
 
+/**
+ * Для публикации важен только RTCRtpSender — список receiver не задаёт кодек энкодера.
+ * Для WHEP — в приоритете receiver.
+ */
 function h264VideoCodecPreferences(role) {
   const sender = RTCRtpSender.getCapabilities?.('video')?.codecs ?? [];
   const recv = RTCRtpReceiver.getCapabilities?.('video')?.codecs ?? [];
   try {
-    const primary = role === 'subscribe' ? recv : sender;
-    const secondary = role === 'subscribe' ? sender : recv;
-    if (hasH264InCodecList(primary)) return reorderVideoCodecsH264First(primary);
-    if (hasH264InCodecList(secondary)) return reorderVideoCodecsH264First(secondary);
+    if (role === 'publish') {
+      if (hasH264InCodecList(sender)) return reorderVideoCodecsH264First(sender);
+      return [];
+    }
+    if (hasH264InCodecList(recv)) return reorderVideoCodecsH264First(recv);
+    if (hasH264InCodecList(sender)) return reorderVideoCodecsH264First(sender);
     return [];
   } catch {
     return [];
   }
+}
+
+/** SRS смотрит на payload в SDP: без строки rtpmap … H264/ публикация будет отклонена. */
+function sdpOfferIncludesH264Video(sdp) {
+  if (!sdp) return false;
+  const idx = sdp.search(/^m=video /m);
+  if (idx === -1) return false;
+  const rest = sdp.slice(idx);
+  const end = rest.search(/\r?\nm=/);
+  const block = end === -1 ? rest : rest.slice(0, end);
+  return /a=rtpmap:\d+ H264\//i.test(block);
 }
 
 function applyH264VideoOnly(transceiver, role) {
@@ -306,7 +323,7 @@ export default function Room() {
       const videoTx = pc.getTransceivers().find((tr) => tr.sender?.track?.kind === 'video');
       if (!h264VideoCodecPreferences('publish').length) {
         throw new Error(
-          'Браузер не сообщает H.264 для отправки видео — SRS не примет поток. Попробуйте Chrome, Edge или другое устройство.',
+          'Среди кодеков отправки (RTCRtpSender) нет H.264 — SRS не примет WHIP. Попробуйте другое устройство или браузер.',
         );
       }
       if (videoTx) applyH264VideoOnly(videoTx, 'publish');
@@ -314,8 +331,16 @@ export default function Room() {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await waitIceGathering(pc);
-      await copyLocalSdpToClipboard(pc.localDescription?.sdp, 'WHIP publish');
-      const answerSdp = await postSdp('/api/rtc/whip', peerId, pc.localDescription.sdp);
+
+      const localSdp = pc.localDescription?.sdp;
+      if (!sdpOfferIncludesH264Video(localSdp)) {
+        throw new Error(
+          'В SDP публикации нет H.264 (часто Chrome на Android с аппаратным HEVC: в offer только VP8/VP9/AV1/H.265). SRS WHIP требует H.264 в offer. Варианты: Firefox для Android, Safari/iOS, публикация с ПК, либо цепочка с перекодированием, не «голый» SRS.',
+        );
+      }
+
+      await copyLocalSdpToClipboard(localSdp, 'WHIP publish');
+      const answerSdp = await postSdp('/api/rtc/whip', peerId, localSdp);
       await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
 
       setLive(true);
