@@ -1,3 +1,9 @@
+/**
+ * Маршруты:
+ * / — ввод ID комнаты
+ * /room/:roomId — комната (WebSocket + WHIP/WHEP к SRS через бэкенд)
+ * остальное — редирект на главную
+ */
 import { Routes, Route, Navigate } from 'react-router-dom';
 import Home from './pages/Home.jsx';
 import Room from './pages/Room.jsx';

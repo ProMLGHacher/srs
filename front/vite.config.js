@@ -1,3 +1,7 @@
+/**
+ * Dev-сервер Vite: фронт на :5173, API и WebSocket проксируются на Node (обычно :3001).
+ * В production статику отдаёт тот же Node — прокси не используется.
+ */
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 

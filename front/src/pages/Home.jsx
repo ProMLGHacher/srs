@@ -1,3 +1,7 @@
+/**
+ * Главная: произвольный строковый ID комнаты в URL (без нормализации на бэкенде).
+ * Один и тот же roomId + разные вкладки/устройства = разные peerId в sessionStorage.
+ */
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -8,6 +12,7 @@ export default function Home() {
   function go() {
     const trimmed = id.trim();
     if (!trimmed) return;
+    // encodeURIComponent сохраняет спецсимволы в path-сегменте
     navigate(`/room/${encodeURIComponent(trimmed)}`);
   }
 

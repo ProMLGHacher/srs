@@ -1,3 +1,7 @@
+/**
+ * Точка входа SPA: монтируем React в #root, включаем клиентский роутинг.
+ * StrictMode в dev дважды вызывает эффекты — это нормально для поиска побочных эффектов.
+ */
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
@@ -9,5 +13,5 @@ ReactDOM.createRoot(document.getElementById('root')).render(
     <BrowserRouter>
       <App />
     </BrowserRouter>
-  </React.StrictMode>
+  </React.StrictMode>,
 );

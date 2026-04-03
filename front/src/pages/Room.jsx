@@ -1,45 +1,52 @@
+/**
+ * Комната: сигналинг по WebSocket (кто публикует), медиа — WebRTC к SRS.
+ *
+ * Поток данных:
+ * 1) WS /ws — join / publishing / unpublish; с сервера — state, peer-publish, peer-unpublish.
+ * 2) Публикация: getUserMedia → RTCPeerConnection → POST /api/rtc/whip (SDP) — прокси на SRS WHIP.
+ * 3) Подписка на участника: отдельный PC на каждый remote peerId → POST /api/rtc/whep.
+ *
+ * VITE_SIGNAL_URL — база для fetch (пусто = тот же origin, удобно за ngrok/https).
+ * VITE_SIGNAL_WS — полный URL вебсокета, если сигналинг на другом хосте.
+ */
 import { useParams, Link } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 
+/** Публичный STUN; при жёстком NAT без TURN может не хватить, но для LAN обычно достаточно. */
 const ICE = [{ urls: 'stun:stun.l.google.com:19302' }];
 
 /**
- * Только H.264 для video (SRS требует валидный H.264 payload в SDP).
- * Нужно передавать в setCodecPreferences не только video/H264, но и следующий
- * в списке capabilities video/rtx (apt=…), иначе Chrome часто игнорирует prefs
- * и шлёт VP8/VP9/AV1/H265 без H.264.
+ * SRS требует H.264 в SDP. На части Android Chrome узкий список только H264+rtx в
+ * setCodecPreferences игнорируется — в offer остаются VP8/AV1/H265 без H264.
+ * Решение: передать полную перестановку getCapabilities() — все H264 (+ следующий rtx)
+ * в начале, остальные кодеки в исходном порядке (валидно для Chrome).
  */
-function extractH264BlocksFromCapabilities(codecs) {
+function reorderVideoCodecsH264First(codecs) {
   if (!codecs?.length) return [];
-  const out = [];
-  for (let i = 0; i < codecs.length; i++) {
+  const n = codecs.length;
+  const used = new Set();
+  const front = [];
+  for (let i = 0; i < n; i++) {
+    if (used.has(i)) continue;
     const c = codecs[i];
     if (!c || c.mimeType.toLowerCase() !== 'video/h264') continue;
-    out.push(c);
+    used.add(i);
+    front.push(c);
     const next = codecs[i + 1];
     if (next?.mimeType?.toLowerCase() === 'video/rtx') {
-      out.push(next);
+      used.add(i + 1);
+      front.push(next);
     }
   }
-  return out;
+  const tail = [];
+  for (let i = 0; i < n; i++) {
+    if (!used.has(i)) tail.push(codecs[i]);
+  }
+  return [...front, ...tail];
 }
 
-function isExcludedNonH264VideoMime(mime) {
-  const x = (mime || '').toLowerCase();
-  return (
-    x === 'video/vp8' ||
-    x === 'video/vp9' ||
-    x === 'video/av1' ||
-    x === 'video/h265' ||
-    x === 'video/hevc'
-  );
-}
-
-/** Если H.264+rtx не идут подряд в списке — убираем «лишние» видеокодеки, порядок остального сохраняем. */
-function stripToH264FriendlyCodecs(codecs) {
-  if (!codecs?.length) return [];
-  const filtered = codecs.filter((c) => c && !isExcludedNonH264VideoMime(c.mimeType));
-  return filtered.some((c) => c.mimeType.toLowerCase() === 'video/h264') ? filtered : [];
+function hasH264InCodecList(codecs) {
+  return codecs.some((c) => c?.mimeType?.toLowerCase() === 'video/h264');
 }
 
 function h264VideoCodecPreferences(role) {
@@ -48,11 +55,9 @@ function h264VideoCodecPreferences(role) {
   try {
     const primary = role === 'subscribe' ? recv : sender;
     const secondary = role === 'subscribe' ? sender : recv;
-    let prefs = extractH264BlocksFromCapabilities(primary);
-    if (!prefs.length) prefs = extractH264BlocksFromCapabilities(secondary);
-    if (!prefs.length) prefs = stripToH264FriendlyCodecs(primary);
-    if (!prefs.length) prefs = stripToH264FriendlyCodecs(secondary);
-    return prefs;
+    if (hasH264InCodecList(primary)) return reorderVideoCodecsH264First(primary);
+    if (hasH264InCodecList(secondary)) return reorderVideoCodecsH264First(secondary);
+    return [];
   } catch {
     return [];
   }
@@ -68,6 +73,7 @@ function applyH264VideoOnly(transceiver, role) {
   }
 }
 
+/** Ждём end-of-candidates в SDP: SRS WHIP/WHEP в этом проекте без trickle ICE. */
 function waitIceGathering(pc) {
   if (pc.iceGatheringState === 'complete') return Promise.resolve();
   return new Promise((resolve) => {
@@ -109,6 +115,7 @@ async function copyLocalSdpToClipboard(sdp, label) {
   }
 }
 
+/** Стабильный UUID на вкладку; новая вкладка = новый peer = отдельный поток в SRS (live/<peerId>). */
 function getOrCreatePeerId() {
   const k = 'srs-room-peer';
   let id = sessionStorage.getItem(k);
@@ -119,6 +126,7 @@ function getOrCreatePeerId() {
   return id;
 }
 
+/** wss при https-странице (ngrok); иначе ws на текущий хост. */
 function signalingWsUrl() {
   const explicit = import.meta.env.VITE_SIGNAL_WS;
   if (explicit) return explicit;
@@ -137,17 +145,22 @@ export default function Room() {
 
   const [err, setErr] = useState('');
   const [live, setLive] = useState(false);
+  /** WS открыт — можно слать join и publishing (кнопка публикации disabled до onopen). */
   const [wsReady, setWsReady] = useState(false);
+  /** remotePeerId → MediaStream с ontrack (один поток на участника). */
   const [remoteStreams, setRemoteStreams] = useState(() => new Map());
 
   const localVideoRef = useRef(null);
   const localStreamRef = useRef(null);
   const publishPcRef = useRef(null);
+  /** Подписки WHEP: по одному RTCPeerConnection на каждого удалённого peerId. */
   const subsRef = useRef(new Map());
   const wsRef = useRef(null);
 
+  /** Префикс URL для API (production за другим доменом). */
   const base = import.meta.env.VITE_SIGNAL_URL || '';
 
+  /** Прокси бэкенда на SRS: path = /api/rtc/whip | whep, peer = SRS stream name. */
   async function postSdp(path, qPeer, sdp) {
     const url = `${base}${path}?peer=${encodeURIComponent(qPeer)}`;
     const r = await fetch(url, {
@@ -160,6 +173,7 @@ export default function Room() {
     return text;
   }
 
+  // Сигналинг + подписки на уже публикующихся; при размонтировании — unpublish и закрытие всех PC.
   useEffect(() => {
     const ws = new WebSocket(signalingWsUrl());
     wsRef.current = ws;
@@ -178,6 +192,7 @@ export default function Room() {
       });
     }
 
+    /** WHEP-play потока live/<remotePeer> через наш бэкенд. */
     async function subscribePeer(remotePeer) {
       if (remotePeer === peerId || subsRef.current.has(remotePeer)) return;
 
@@ -274,6 +289,7 @@ export default function Room() {
     };
   }, [roomId, peerId, base]);
 
+  /** WHIP-publish: один поток на peerId, после успеха уведомляем комнату по WS. */
   async function startPublish() {
     setErr('');
     try {
@@ -318,6 +334,7 @@ export default function Room() {
     }
   }
 
+  /** Закрываем PC и снимаем себя из списка издателей на сервере сигналинга. */
   async function stopPublish() {
     const w = wsRef.current;
     if (w && w.readyState === WebSocket.OPEN) {
@@ -370,6 +387,7 @@ export default function Room() {
   );
 }
 
+/** Отдельный <video>: при смене stream перепривязываем srcObject (ключ в списке = peerId). */
 function RemoteTile({ stream, label }) {
   const ref = useRef(null);
   useEffect(() => {
