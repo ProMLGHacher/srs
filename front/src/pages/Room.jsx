@@ -84,6 +84,31 @@ function waitIceGathering(pc) {
   });
 }
 
+/** Копирует локальный SDP (после ICE gather) в буфер — для отладки. */
+async function copyLocalSdpToClipboard(sdp, label) {
+  if (!sdp) return;
+  const text = `--- WebRTC local SDP [${label}] ---\n${sdp}`;
+  try {
+    await navigator.clipboard.writeText(text);
+    console.info(`[SDP] скопирован в буфер: ${label}`);
+  } catch (e) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      console.info(`[SDP] скопирован (fallback): ${label}`);
+    } catch (e2) {
+      console.warn('[SDP] буфер обмена недоступен:', e, e2);
+    }
+  }
+}
+
 function getOrCreatePeerId() {
   const k = 'srs-room-peer';
   let id = sessionStorage.getItem(k);
@@ -182,6 +207,7 @@ export default function Room() {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         await waitIceGathering(pc);
+        void copyLocalSdpToClipboard(pc.localDescription?.sdp, `WHEP → ${remotePeer.slice(0, 8)}…`);
         const answerSdp = await postSdp('/api/rtc/whep', remotePeer, pc.localDescription.sdp);
         await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
       } catch (e) {
@@ -272,6 +298,7 @@ export default function Room() {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await waitIceGathering(pc);
+      await copyLocalSdpToClipboard(pc.localDescription?.sdp, 'WHIP publish');
       const answerSdp = await postSdp('/api/rtc/whip', peerId, pc.localDescription.sdp);
       await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
 
