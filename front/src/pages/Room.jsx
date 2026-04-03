@@ -3,28 +3,63 @@ import { useEffect, useRef, useState } from 'react';
 
 const ICE = [{ urls: 'stun:stun.l.google.com:19302' }];
 
-/** Только H.264 для video (SRS SFU без перекодирования под другие кодеки). */
-function h264VideoCodecsList() {
-  try {
-    const fromSender = RTCRtpSender.getCapabilities?.('video')?.codecs ?? [];
-    const fromReceiver = RTCRtpReceiver.getCapabilities?.('video')?.codecs ?? [];
-    const seen = new Set();
-    const out = [];
-    for (const c of [...fromSender, ...fromReceiver]) {
-      if (!c || c.mimeType.toLowerCase() !== 'video/h264') continue;
-      const key = `${c.sdpFmtpLine || ''}|${c.clockRate}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(c);
+/**
+ * Только H.264 для video (SRS требует валидный H.264 payload в SDP).
+ * Нужно передавать в setCodecPreferences не только video/H264, но и следующий
+ * в списке capabilities video/rtx (apt=…), иначе Chrome часто игнорирует prefs
+ * и шлёт VP8/VP9/AV1/H265 без H.264.
+ */
+function extractH264BlocksFromCapabilities(codecs) {
+  if (!codecs?.length) return [];
+  const out = [];
+  for (let i = 0; i < codecs.length; i++) {
+    const c = codecs[i];
+    if (!c || c.mimeType.toLowerCase() !== 'video/h264') continue;
+    out.push(c);
+    const next = codecs[i + 1];
+    if (next?.mimeType?.toLowerCase() === 'video/rtx') {
+      out.push(next);
     }
-    return out;
+  }
+  return out;
+}
+
+function isExcludedNonH264VideoMime(mime) {
+  const x = (mime || '').toLowerCase();
+  return (
+    x === 'video/vp8' ||
+    x === 'video/vp9' ||
+    x === 'video/av1' ||
+    x === 'video/h265' ||
+    x === 'video/hevc'
+  );
+}
+
+/** Если H.264+rtx не идут подряд в списке — убираем «лишние» видеокодеки, порядок остального сохраняем. */
+function stripToH264FriendlyCodecs(codecs) {
+  if (!codecs?.length) return [];
+  const filtered = codecs.filter((c) => c && !isExcludedNonH264VideoMime(c.mimeType));
+  return filtered.some((c) => c.mimeType.toLowerCase() === 'video/h264') ? filtered : [];
+}
+
+function h264VideoCodecPreferences(role) {
+  const sender = RTCRtpSender.getCapabilities?.('video')?.codecs ?? [];
+  const recv = RTCRtpReceiver.getCapabilities?.('video')?.codecs ?? [];
+  try {
+    const primary = role === 'subscribe' ? recv : sender;
+    const secondary = role === 'subscribe' ? sender : recv;
+    let prefs = extractH264BlocksFromCapabilities(primary);
+    if (!prefs.length) prefs = extractH264BlocksFromCapabilities(secondary);
+    if (!prefs.length) prefs = stripToH264FriendlyCodecs(primary);
+    if (!prefs.length) prefs = stripToH264FriendlyCodecs(secondary);
+    return prefs;
   } catch {
     return [];
   }
 }
 
-function applyH264VideoOnly(transceiver) {
-  const codecs = h264VideoCodecsList();
+function applyH264VideoOnly(transceiver, role) {
+  const codecs = h264VideoCodecPreferences(role);
   if (!codecs.length || !transceiver?.setCodecPreferences) return;
   try {
     transceiver.setCodecPreferences(codecs);
@@ -125,7 +160,7 @@ export default function Room() {
       subsRef.current.set(remotePeer, pc);
       pc.addTransceiver('audio', { direction: 'recvonly' });
       const videoRx = pc.addTransceiver('video', { direction: 'recvonly' });
-      applyH264VideoOnly(videoRx);
+      applyH264VideoOnly(videoRx, 'subscribe');
 
       pc.ontrack = (ev) => {
         const [stream] = ev.streams;
@@ -227,7 +262,12 @@ export default function Room() {
       publishPcRef.current = pc;
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
       const videoTx = pc.getTransceivers().find((tr) => tr.sender?.track?.kind === 'video');
-      if (videoTx) applyH264VideoOnly(videoTx);
+      if (!h264VideoCodecPreferences('publish').length) {
+        throw new Error(
+          'Браузер не сообщает H.264 для отправки видео — SRS не примет поток. Попробуйте Chrome, Edge или другое устройство.',
+        );
+      }
+      if (videoTx) applyH264VideoOnly(videoTx, 'publish');
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
