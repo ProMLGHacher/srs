@@ -56,6 +56,10 @@ npm run dev
 
 Для отдельного URL API при сборке фронта задайте `VITE_SIGNAL_URL` и при необходимости `VITE_SIGNAL_WS` (полный URL `wss://.../ws`).
 
+### Деплой за nginx / другим reverse proxy
+
+Маршруты SPA (`/room/<id>` и т.д.) не должны обрабатываться как каталоги на диске. В **nginx** не используйте `try_files $uri $uri/ /index.html` — вариант `$uri/` даёт **301** на путь вроде `/room/` и цикл редиректов. Проксируйте всё на бинарник Go или используйте `try_files $uri /index.html` без `$uri/`. Пример: [`deploy/nginx-spa.example.conf`](deploy/nginx-spa.example.conf).
+
 ## Структура репозитория
 
 | Путь | Назначение |

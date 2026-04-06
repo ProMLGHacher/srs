@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -37,11 +38,23 @@ func cors(next http.Handler) http.Handler {
 	})
 }
 
+// spaHandler отдаёт статику из embed и для любых «логических» путей SPA (/room/..., /settings, …)
+// всегда index.html без 301 от http.FileServer (иначе /room/id может превратиться в /room/ с Location: ./).
 func spaHandler(fsys fs.FS, file http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		p := strings.TrimPrefix(r.URL.Path, "/")
 		if p == "" {
 			p = "index.html"
+		}
+		if !isEmbeddedStaticFile(p) {
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = "/index.html"
+			file.ServeHTTP(w, r2)
+			return
 		}
 		f, err := fsys.Open(p)
 		if err != nil {
@@ -53,6 +66,24 @@ func spaHandler(fsys fs.FS, file http.Handler) http.Handler {
 		_ = f.Close()
 		file.ServeHTTP(w, r)
 	})
+}
+
+// Только реальные файлы из dist: корень (index, favicon), assets/*, типичные расширения. Не /room/...
+func isEmbeddedStaticFile(p string) bool {
+	if p == "index.html" || p == "favicon.ico" || p == "robots.txt" {
+		return true
+	}
+	if strings.HasPrefix(p, "assets/") {
+		return true
+	}
+	ext := strings.ToLower(filepath.Ext(p))
+	switch ext {
+	case ".js", ".css", ".map", ".ico", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp",
+		".woff", ".woff2", ".ttf", ".eot", ".json", ".webmanifest":
+		return true
+	default:
+		return false
+	}
 }
 
 func main() {
