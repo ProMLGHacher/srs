@@ -23,7 +23,7 @@ export function loadMediaPrefs(): StoredMediaPrefs {
   }
 }
 
-export function buildGUMConstraints(): { audio: boolean | MediaTrackConstraints; video: boolean | MediaTrackConstraints } {
+export function buildAudioConstraints(): MediaTrackConstraints {
   const p = loadMediaPrefs()
   const audio: MediaTrackConstraints = {
     noiseSuppression: p.noiseSuppression !== false,
@@ -31,7 +31,11 @@ export function buildGUMConstraints(): { audio: boolean | MediaTrackConstraints;
     autoGainControl: p.autoGainControl !== false,
   }
   if (p.audioDeviceId) audio.deviceId = { exact: p.audioDeviceId }
+  return audio
+}
 
+export function buildVideoConstraints(): MediaTrackConstraints {
+  const p = loadMediaPrefs()
   const video: MediaTrackConstraints = {
     width: p.videoWidth ? { ideal: p.videoWidth } : { ideal: 640 },
     facingMode: p.facingMode || "user",
@@ -39,6 +43,10 @@ export function buildGUMConstraints(): { audio: boolean | MediaTrackConstraints;
   if (p.videoHeight) video.height = { ideal: p.videoHeight }
   if (p.frameRate) video.frameRate = { ideal: p.frameRate }
   if (p.videoDeviceId) video.deviceId = { exact: p.videoDeviceId }
+  return video
+}
 
-  return { audio, video }
+/** Оба трека (как раньше). Для «только мик» / «без камеры» используйте getUserMedia с video: false. */
+export function buildGUMConstraints(): { audio: MediaTrackConstraints; video: MediaTrackConstraints } {
+  return { audio: buildAudioConstraints(), video: buildVideoConstraints() }
 }

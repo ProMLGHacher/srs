@@ -1,6 +1,6 @@
 import { logRoomData } from "@/app/logging/kvtAppLog"
+import { buildAudioConstraints, buildVideoConstraints } from "@/app/media/mediaPrefs"
 import { loadLobbyMediaDefaults } from "@/app/profile/lobbyMediaPrefs"
-import { buildGUMConstraints } from "@/app/media/mediaPrefs"
 import { MutableStateFlow } from "@kvt/runtime"
 import type { RoomMember } from "../../domain/model/roomMember"
 import type { SignalingInbound } from "../../domain/model/signalingInbound"
@@ -11,6 +11,8 @@ import type { RoomSessionInitOptions } from "../../domain/model/roomSessionInit"
 import { RoomSessionRepository } from "../../domain/repository/RoomSessionRepository"
 import { applyH264VideoOnly, h264VideoCodecPreferences } from "../webrtc/webrtcCodecPreferences"
 import { waitIceGathering } from "../webrtc/iceGathering"
+import { createBlackVideoTrack, stopTrackSafe } from "../webrtc/blackVideoTrack"
+import { createMediaMutex } from "../webrtc/mediaMutex"
 import { copyLocalSdpToClipboard } from "../webrtc/sdpClipboard"
 
 const ICE: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }]
@@ -91,6 +93,9 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
   private readonly _remoteStreams = new Map<string, MediaStream>()
   private _heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private _publishStarting = false
+  /** Заглушка «чёрный кадр» для SRS без камеры; не путать с реальной камерой. */
+  private _blackVideoTrack: MediaStreamTrack | null = null
+  private readonly _mediaMutex = createMediaMutex()
 
   private _stopHeartbeat(): void {
     if (this._heartbeatTimer != null) {
@@ -162,6 +167,113 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
     return text
   }
 
+  private _disposeLocalMedia(): void {
+    stopTrackSafe(this._blackVideoTrack)
+    this._blackVideoTrack = null
+    if (this._localStream) {
+      this._localStream.getTracks().forEach((t) => stopTrackSafe(t))
+    }
+    this._localStream = null
+  }
+
+  private _clearBlackVideoTrack(): void {
+    const b = this._blackVideoTrack
+    if (!b) return
+    stopTrackSafe(b)
+    try {
+      this._localStream?.removeTrack(b)
+    } catch {
+      /* ignore */
+    }
+    this._blackVideoTrack = null
+  }
+
+  /** Синхронизирует MediaStream с localMicOn/localCamOn: без камеры — только чёрная заглушка (SRS + H.264 в SDP), без getUserMedia(video). */
+  private async ensureLocalStreamMatchesState(): Promise<void> {
+    const gen = this._sessionGeneration
+    const { localMicOn, localCamOn } = this._state.value
+
+    const applyMic = (): void => {
+      this._localStream?.getAudioTracks().forEach((t) => {
+        t.enabled = localMicOn
+      })
+    }
+
+    let stream = this._localStream
+
+    if (!stream) {
+      const audio = buildAudioConstraints()
+      if (localCamOn) {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio,
+          video: buildVideoConstraints(),
+        })
+      } else {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio,
+          video: false,
+        })
+        const black = createBlackVideoTrack()
+        this._blackVideoTrack = black
+        stream.addTrack(black)
+      }
+      if (gen !== this._sessionGeneration) {
+        stream.getTracks().forEach((t) => stopTrackSafe(t))
+        this._blackVideoTrack = null
+        return
+      }
+      this._localStream = stream
+      applyMic()
+      this._bumpMediaEpoch()
+      return
+    }
+
+    applyMic()
+    if (gen !== this._sessionGeneration) return
+
+    if (localCamOn) {
+      this._clearBlackVideoTrack()
+      const liveVideo = stream.getVideoTracks().filter((t) => t.readyState === "live")
+      if (liveVideo.length === 0) {
+        const v = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: buildVideoConstraints(),
+        })
+        if (gen !== this._sessionGeneration) {
+          v.getTracks().forEach((t) => stopTrackSafe(t))
+          return
+        }
+        const vt = v.getVideoTracks()[0]
+        if (vt) stream.addTrack(vt)
+      }
+      stream.getVideoTracks().forEach((t) => {
+        if (t.readyState === "live") t.enabled = true
+      })
+    } else {
+      for (const t of [...stream.getVideoTracks()]) {
+        stopTrackSafe(t)
+        stream.removeTrack(t)
+      }
+      this._blackVideoTrack = null
+      const black = createBlackVideoTrack()
+      this._blackVideoTrack = black
+      stream.addTrack(black)
+    }
+
+    if (gen !== this._sessionGeneration) return
+    this._localStream = stream
+    this._bumpMediaEpoch()
+  }
+
+  private async _syncPublishVideoSender(): Promise<void> {
+    const pc = this._publishPc
+    const stream = this._localStream
+    if (!pc || !stream || !this._state.value.isPublishing) return
+    const sender = pc.getSenders().find((s) => s.track?.kind === "video")
+    const vt = stream.getVideoTracks()[0]
+    if (sender && vt) await sender.replaceTrack(vt)
+  }
+
   override initialize(roomId: string, peerId: string, nickname: string, opts?: RoomSessionInitOptions): void {
     this.dispose()
     const gen = this._sessionGeneration
@@ -186,9 +298,16 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
       this._localStream.getAudioTracks().forEach((t) => {
         t.enabled = initialMicOn
       })
-      this._localStream.getVideoTracks().forEach((t) => {
-        t.enabled = initialCamOn
-      })
+      if (!initialCamOn) {
+        this._localStream.getVideoTracks().forEach((t) => {
+          stopTrackSafe(t)
+          this._localStream!.removeTrack(t)
+        })
+      } else {
+        this._localStream.getVideoTracks().forEach((t) => {
+          t.enabled = true
+        })
+      }
       this._bumpMediaEpoch()
     }
     logRoomData.info("session initialize", { roomId, peerId: peerId.slice(0, 8), signalingWsUrl: sigUrl })
@@ -404,8 +523,7 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
 
     this._publishPc?.close()
     this._publishPc = null
-    this._localStream?.getTracks().forEach((t) => t.stop())
-    this._localStream = null
+    this._disposeLocalMedia()
 
     this._subs.forEach((pc) => pc.close())
     this._subs.clear()
@@ -424,43 +542,30 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
 
   override setLocalCamEnabled(on: boolean): void {
     this._state.update({ localCamOn: on })
-    this._localStream?.getVideoTracks().forEach((t) => {
-      t.enabled = on
-    })
     this._sendPresenceWS()
+    void this._mediaMutex.run(async () => {
+      try {
+        await this.ensureLocalStreamMatchesState()
+        await this._syncPublishVideoSender()
+      } catch (e) {
+        logRoomData.error("setLocalCam", e)
+        this._state.update({ error: e instanceof Error ? e.message : String(e) })
+      }
+    })
   }
 
   override async startPublishing(): Promise<void> {
-    if (this._state.value.isPublishing && this._publishPc != null) return
-    if (this._publishStarting) return
-    this._publishStarting = true
-    logRoomData.info("WHIP startPublishing")
-    this._state.update({ error: null })
-    try {
-      const { localMicOn, localCamOn } = this._state.value
-      let stream = this._localStream
-      const hasLive = !!stream?.getTracks().some((t) => t.readyState === "live")
-      if (!stream || !hasLive) {
-        const { audio, video } = buildGUMConstraints()
-        stream = await navigator.mediaDevices.getUserMedia({ audio, video })
-        logRoomData.info("getUserMedia ok", { tracks: stream.getTracks().map((t) => t.kind) })
-        stream.getAudioTracks().forEach((t) => {
-          t.enabled = localMicOn
-        })
-        stream.getVideoTracks().forEach((t) => {
-          t.enabled = localCamOn
-        })
-        this._localStream = stream
-        this._bumpMediaEpoch()
-      } else {
-        stream.getAudioTracks().forEach((t) => {
-          t.enabled = localMicOn
-        })
-        stream.getVideoTracks().forEach((t) => {
-          t.enabled = localCamOn
-        })
-        logRoomData.info("WHIP reuse local preview stream", { tracks: stream.getTracks().map((t) => t.kind) })
-      }
+    return this._mediaMutex.run(async () => {
+      if (this._state.value.isPublishing && this._publishPc != null) return
+      if (this._publishStarting) return
+      this._publishStarting = true
+      logRoomData.info("WHIP startPublishing")
+      this._state.update({ error: null })
+      try {
+        await this.ensureLocalStreamMatchesState()
+        const stream = this._localStream
+        if (!stream) throw new Error("нет локального MediaStream")
+        logRoomData.info("WHIP local stream ready", { tracks: stream.getTracks().map((t) => t.kind) })
 
       const pc = new RTCPeerConnection({ iceServers: ICE })
       this._publishPc = pc
@@ -489,8 +594,7 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
           this._publishLifecycleIgnore = true
           this._publishPc?.close()
           this._publishPc = null
-          this._localStream?.getTracks().forEach((t) => t.stop())
-          this._localStream = null
+          this._disposeLocalMedia()
           this._state.update({
             isPublishing: false,
             error: `Публикация: WebRTC с SRS не выдержал соединение (ICE failed). ${ICE_FAILED_HINT}`,
@@ -541,13 +645,13 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
       this._state.update({ error: msg })
       this._publishPc?.close()
       this._publishPc = null
-      this._localStream?.getTracks().forEach((t) => t.stop())
-      this._localStream = null
+      this._disposeLocalMedia()
       this._bumpMediaEpoch()
       this._flushDiagnostics()
     } finally {
       this._publishStarting = false
     }
+    })
   }
 
   override stopPublishing(): void {
@@ -559,8 +663,7 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
     }
     this._publishPc?.close()
     this._publishPc = null
-    this._localStream?.getTracks().forEach((t) => t.stop())
-    this._localStream = null
+    this._disposeLocalMedia()
     this._state.update({ isPublishing: false })
     this._bumpMediaEpoch()
     this._flushDiagnostics()

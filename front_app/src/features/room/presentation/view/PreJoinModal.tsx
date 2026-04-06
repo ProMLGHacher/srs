@@ -1,4 +1,4 @@
-import { buildGUMConstraints } from "@/app/media/mediaPrefs"
+import { buildAudioConstraints, buildVideoConstraints } from "@/app/media/mediaPrefs"
 import { loadLobbyMediaDefaults } from "@/app/profile/lobbyMediaPrefs"
 import { useEffect, useRef, useState } from "react"
 
@@ -18,9 +18,12 @@ export function PreJoinModal({ onConfirm, onCancel }: PreJoinModalProps) {
   useEffect(() => {
     let cancelled = false
     setErr(null)
-    const { audio, video } = buildGUMConstraints()
-    navigator.mediaDevices
-      .getUserMedia({ audio, video })
+    const audio = buildAudioConstraints()
+    const gum = camOn
+      ? navigator.mediaDevices.getUserMedia({ audio, video: buildVideoConstraints() })
+      : navigator.mediaDevices.getUserMedia({ audio, video: false })
+
+    gum
       .then((s) => {
         if (cancelled) {
           s.getTracks().forEach((t) => t.stop())
@@ -40,7 +43,7 @@ export function PreJoinModal({ onConfirm, onCancel }: PreJoinModalProps) {
         return null
       })
     }
-  }, [])
+  }, [camOn])
 
   useEffect(() => {
     const s = preview
@@ -75,16 +78,22 @@ export function PreJoinModal({ onConfirm, onCancel }: PreJoinModalProps) {
 
         <div className="mt-4 aspect-video overflow-hidden rounded-lg bg-black">
           {preview ? (
-            <video
-              ref={videoRef}
-              className="h-full w-full object-cover [transform:scaleX(-1)]"
-              autoPlay
-              playsInline
-              muted
-            />
+            preview.getVideoTracks().length > 0 ? (
+              <video
+                ref={videoRef}
+                className="h-full w-full object-cover [transform:scaleX(-1)]"
+                autoPlay
+                playsInline
+                muted
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center px-2 text-center text-sm text-white/60">
+                Камера выключена — доступ к камере не запрашивается
+              </div>
+            )
           ) : (
             <div className="flex h-full items-center justify-center px-2 text-center text-sm text-white/60">
-              {err || "Запрос доступа к камере и микрофону…"}
+              {err || "Запрос доступа к микрофону…"}
             </div>
           )}
         </div>
