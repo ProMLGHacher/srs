@@ -1,12 +1,16 @@
+import { Toast } from "@/app/presentation/ui/Toast"
 import { getStoredDisplayName } from "@/app/profile/displayName"
+import { loadLobbyMediaDefaults } from "@/app/profile/lobbyMediaPrefs"
+import type { RoomSessionInitOptions } from "../../domain/model/roomSessionInit"
 import { useViewModel, useStateFlow } from "@kvt/react"
-import { useCallback, useEffect, useReducer, useState } from "react"
-import { Link, Navigate, useNavigate, useParams } from "react-router"
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
+import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router"
 import type { RoomMember } from "../../domain/model/roomMember"
 import { RoomViewModel } from "../view_model/RoomViewModel"
 import { ConferenceBottomBar } from "./ConferenceBottomBar"
 import { ParticipantTile } from "./ParticipantTile"
 import { ParticipantsDrawer } from "./ParticipantsDrawer"
+import { PreJoinModal } from "./PreJoinModal"
 import { RoomDebugPanel } from "./RoomDebugPanel"
 import { getPeerVolume, setPeerVolume } from "./peerVolumeStorage"
 
@@ -26,20 +30,56 @@ export function RoomPage(_: unknown, VM = RoomViewModel) {
   const vm = useViewModel(VM)
   const snap = useStateFlow(vm.state)
   const navigate = useNavigate()
+  const location = useLocation()
   const { roomId: roomIdParam } = useParams()
   const roomId = roomIdParam ? decodeURIComponent(roomIdParam) : ""
   const displayName = getStoredDisplayName()
   const [, bumpVolume] = useReducer((n: number) => n + 1, 0)
   const [participantsOpen, setParticipantsOpen] = useState(false)
+  const [toast, setToast] = useState<string | null>(null)
+  const [copyBusy, setCopyBusy] = useState(false)
+
+  const skipPreJoin = location.state?.skipPreJoin === true
+  const [manualEntry, setManualEntry] = useState<RoomSessionInitOptions | null>(null)
+
+  const skipEntryInit = useMemo((): RoomSessionInitOptions | null => {
+    if (!skipPreJoin) return null
+    const l = loadLobbyMediaDefaults()
+    return { initialMicOn: l.micOn, initialCamOn: l.camOn }
+  }, [skipPreJoin, roomId])
+
+  const entryInit = skipPreJoin ? skipEntryInit : manualEntry
 
   useEffect(() => {
-    if (!roomId || !displayName) return
-    vm.attachRoom(roomId, displayName)
-  }, [vm, roomId, displayName])
+    if (!roomId || !displayName.trim() || !entryInit) return
+    vm.attachRoom(roomId, displayName, entryInit)
+  }, [vm, roomId, displayName, entryInit])
+
+  const autoPublishRef = useRef(false)
+  useEffect(() => {
+    autoPublishRef.current = false
+  }, [roomId, displayName, entryInit])
+
+  useEffect(() => {
+    if (!entryInit) return
+    if (!snap.wsReady || snap.isPublishing) return
+    if (autoPublishRef.current) return
+    autoPublishRef.current = true
+    void vm.startPublish()
+  }, [entryInit, snap.wsReady, snap.isPublishing, vm])
 
   const onVolumeChange = useCallback((peerId: string, v: number) => {
     setPeerVolume(peerId, v)
     bumpVolume()
+  }, [])
+
+  const onCopyLink = useCallback(() => {
+    setCopyBusy(true)
+    window.setTimeout(() => setCopyBusy(false), 400)
+    void navigator.clipboard.writeText(window.location.href).then(
+      () => setToast("Ссылка скопирована"),
+      () => setToast("Не удалось скопировать"),
+    )
   }, [])
 
   if (!roomId) {
@@ -47,6 +87,19 @@ export function RoomPage(_: unknown, VM = RoomViewModel) {
   }
   if (!displayName.trim()) {
     return <Navigate to="/" replace />
+  }
+
+  if (!skipPreJoin && !manualEntry) {
+    return (
+      <>
+        <PreJoinModal
+          onCancel={() => navigate("/")}
+          onConfirm={({ stream, micOn, camOn }) => {
+            setManualEntry({ initialMicOn: micOn, initialCamOn: camOn, localPreviewStream: stream })
+          }}
+        />
+      </>
+    )
   }
 
   const peerId = vm.getPeerId()
@@ -104,16 +157,11 @@ export function RoomPage(_: unknown, VM = RoomViewModel) {
       <ConferenceBottomBar
         snap={snap}
         participantsOpen={participantsOpen}
+        copyBusy={copyBusy}
         onToggleMic={() => vm.setLocalMic(!snap.localMicOn)}
         onToggleCam={() => vm.setLocalCam(!snap.localCamOn)}
-        onTogglePublish={() => {
-          if (snap.isPublishing) vm.stopPublish()
-          else void vm.startPublish()
-        }}
         onLeave={() => navigate("/")}
-        onCopyLink={() => {
-          void navigator.clipboard.writeText(window.location.href).catch(() => {})
-        }}
+        onCopyLink={onCopyLink}
         onToggleParticipants={() => setParticipantsOpen((o) => !o)}
       />
 
@@ -123,6 +171,8 @@ export function RoomPage(_: unknown, VM = RoomViewModel) {
         localPeerId={peerId}
         onClose={() => setParticipantsOpen(false)}
       />
+
+      {toast ? <Toast message={toast} onDone={() => setToast(null)} /> : null}
     </div>
   )
 }

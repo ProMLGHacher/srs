@@ -1,4 +1,5 @@
 import { logRoomData } from "@/app/logging/kvtAppLog"
+import { loadLobbyMediaDefaults } from "@/app/profile/lobbyMediaPrefs"
 import { buildGUMConstraints } from "@/app/media/mediaPrefs"
 import { MutableStateFlow } from "@kvt/runtime"
 import type { RoomMember } from "../../domain/model/roomMember"
@@ -6,6 +7,7 @@ import type { SignalingInbound } from "../../domain/model/signalingInbound"
 import type { RoomPageSnapshot } from "../../domain/model/roomPageSnapshot"
 import type { RtcPeerDiagnostics, WsReadyStateLabel } from "../../domain/model/roomDiagnostics"
 import { sdpOfferIncludesH264Video } from "../../domain/sdp/videoCodecOrder"
+import type { RoomSessionInitOptions } from "../../domain/model/roomSessionInit"
 import { RoomSessionRepository } from "../../domain/repository/RoomSessionRepository"
 import { applyH264VideoOnly, h264VideoCodecPreferences } from "../webrtc/webrtcCodecPreferences"
 import { waitIceGathering } from "../webrtc/iceGathering"
@@ -88,6 +90,7 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
   private readonly _subs = new Map<string, RTCPeerConnection>()
   private readonly _remoteStreams = new Map<string, MediaStream>()
   private _heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  private _publishStarting = false
 
   private _stopHeartbeat(): void {
     if (this._heartbeatTimer != null) {
@@ -159,12 +162,15 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
     return text
   }
 
-  override initialize(roomId: string, peerId: string, nickname: string): void {
+  override initialize(roomId: string, peerId: string, nickname: string, opts?: RoomSessionInitOptions): void {
     this.dispose()
     const gen = this._sessionGeneration
     this._roomId = roomId
     this._peerId = peerId
     this._nickname = nickname.trim()
+    const lobby = loadLobbyMediaDefaults()
+    const initialMicOn = opts?.initialMicOn ?? lobby.micOn
+    const initialCamOn = opts?.initialCamOn ?? lobby.camOn
     const sigUrl = signalingWsUrl()
     this._state.set({
       ...initialSnapshot(),
@@ -172,7 +178,19 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
       signalingWsUrl: sigUrl,
       wsReadyState: "CONNECTING",
       localNickname: this._nickname,
+      localMicOn: initialMicOn,
+      localCamOn: initialCamOn,
     })
+    if (opts?.localPreviewStream) {
+      this._localStream = opts.localPreviewStream
+      this._localStream.getAudioTracks().forEach((t) => {
+        t.enabled = initialMicOn
+      })
+      this._localStream.getVideoTracks().forEach((t) => {
+        t.enabled = initialCamOn
+      })
+      this._bumpMediaEpoch()
+    }
     logRoomData.info("session initialize", { roomId, peerId: peerId.slice(0, 8), signalingWsUrl: sigUrl })
 
     const ws = new WebSocket(sigUrl)
@@ -413,21 +431,36 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
   }
 
   override async startPublishing(): Promise<void> {
+    if (this._state.value.isPublishing && this._publishPc != null) return
+    if (this._publishStarting) return
+    this._publishStarting = true
     logRoomData.info("WHIP startPublishing")
     this._state.update({ error: null })
     try {
-      const { audio, video } = buildGUMConstraints()
-      const stream = await navigator.mediaDevices.getUserMedia({ audio, video })
-      logRoomData.info("getUserMedia ok", { tracks: stream.getTracks().map((t) => t.kind) })
       const { localMicOn, localCamOn } = this._state.value
-      stream.getAudioTracks().forEach((t) => {
-        t.enabled = localMicOn
-      })
-      stream.getVideoTracks().forEach((t) => {
-        t.enabled = localCamOn
-      })
-      this._localStream = stream
-      this._bumpMediaEpoch()
+      let stream = this._localStream
+      const hasLive = !!stream?.getTracks().some((t) => t.readyState === "live")
+      if (!stream || !hasLive) {
+        const { audio, video } = buildGUMConstraints()
+        stream = await navigator.mediaDevices.getUserMedia({ audio, video })
+        logRoomData.info("getUserMedia ok", { tracks: stream.getTracks().map((t) => t.kind) })
+        stream.getAudioTracks().forEach((t) => {
+          t.enabled = localMicOn
+        })
+        stream.getVideoTracks().forEach((t) => {
+          t.enabled = localCamOn
+        })
+        this._localStream = stream
+        this._bumpMediaEpoch()
+      } else {
+        stream.getAudioTracks().forEach((t) => {
+          t.enabled = localMicOn
+        })
+        stream.getVideoTracks().forEach((t) => {
+          t.enabled = localCamOn
+        })
+        logRoomData.info("WHIP reuse local preview stream", { tracks: stream.getTracks().map((t) => t.kind) })
+      }
 
       const pc = new RTCPeerConnection({ iceServers: ICE })
       this._publishPc = pc
@@ -512,6 +545,8 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
       this._localStream = null
       this._bumpMediaEpoch()
       this._flushDiagnostics()
+    } finally {
+      this._publishStarting = false
     }
   }
 

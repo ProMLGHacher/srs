@@ -1,5 +1,6 @@
 import type { StateFlow } from "@kvt/runtime"
 import type { RoomPageSnapshot } from "../model/roomPageSnapshot"
+import type { RoomSessionInitOptions } from "../model/roomSessionInit"
 
 /**
  * Сессия комнаты: WebSocket-сигналинг + WHIP/WHEP через бэкенд.
@@ -8,7 +9,7 @@ import type { RoomPageSnapshot } from "../model/roomPageSnapshot"
 export abstract class RoomSessionRepository {
   abstract readonly state: StateFlow<RoomPageSnapshot>
 
-  abstract initialize(roomId: string, peerId: string, nickname: string): void
+  abstract initialize(roomId: string, peerId: string, nickname: string, opts?: RoomSessionInitOptions): void
   abstract dispose(): void
 
   abstract startPublishing(): Promise<void>

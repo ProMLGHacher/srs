@@ -3,9 +3,9 @@ import type { RoomPageSnapshot } from "../../domain/model/roomPageSnapshot"
 type ConferenceBottomBarProps = {
   snap: RoomPageSnapshot
   participantsOpen: boolean
+  copyBusy?: boolean
   onToggleMic: () => void
   onToggleCam: () => void
-  onTogglePublish: () => void
   onLeave: () => void
   onCopyLink: () => void
   onToggleParticipants: () => void
@@ -14,9 +14,9 @@ type ConferenceBottomBarProps = {
 export function ConferenceBottomBar({
   snap,
   participantsOpen,
+  copyBusy = false,
   onToggleMic,
   onToggleCam,
-  onTogglePublish,
   onLeave,
   onCopyLink,
   onToggleParticipants,
@@ -42,15 +42,11 @@ export function ConferenceBottomBar({
         </button>
         <button
           type="button"
-          className={`rounded-full px-4 py-2 text-sm font-medium ${snap.isPublishing ? "bg-amber-600/80 text-white" : "bg-[var(--kvt-color-primary)] text-[var(--kvt-color-on-primary)]"}`}
-          onClick={onTogglePublish}
-          disabled={!snap.wsReady}
-          title="Трансляция в комнату (SRS)"
+          className="rounded-full bg-white/10 px-4 py-2 text-sm disabled:opacity-45"
+          onClick={onCopyLink}
+          disabled={copyBusy}
         >
-          {snap.isPublishing ? "Остановить эфир" : "В эфир"}
-        </button>
-        <button type="button" className="rounded-full bg-white/10 px-4 py-2 text-sm" onClick={onCopyLink}>
-          Ссылка
+          {copyBusy ? "Копируем…" : "Ссылка"}
         </button>
         <button
           type="button"

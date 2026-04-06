@@ -1,6 +1,7 @@
 import { logRoomPresentation } from "@/app/logging/kvtAppLog"
 import { Inject, type ViewModel } from "@kvt/runtime"
 import type { RoomPageSnapshot } from "../../domain/model/roomPageSnapshot"
+import type { RoomSessionInitOptions } from "../../domain/model/roomSessionInit"
 import { RoomSessionRepository } from "../../domain/repository/RoomSessionRepository"
 import { TabPeerIdRepository } from "../../domain/repository/TabPeerIdRepository"
 
@@ -22,10 +23,10 @@ export class RoomViewModel implements ViewModel<RoomPageSnapshot> {
     }
   }
 
-  attachRoom(roomId: string, nickname: string): void {
+  attachRoom(roomId: string, nickname: string, opts?: RoomSessionInitOptions): void {
     logRoomPresentation.info("attachRoom", { roomId, nickname })
     this._repo.dispose()
-    this._repo.initialize(roomId, this._peer.getOrCreatePeerId(), nickname)
+    this._repo.initialize(roomId, this._peer.getOrCreatePeerId(), nickname, opts)
   }
 
   getPeerId(): string {

@@ -1,4 +1,5 @@
 import { getStoredDisplayName, setStoredDisplayName } from "@/app/profile/displayName"
+import { loadLobbyMediaDefaults, saveLobbyMediaDefaults } from "@/app/profile/lobbyMediaPrefs"
 import { useState } from "react"
 import { useNavigate } from "react-router"
 import { MediaSettingsModal } from "./MediaSettingsModal"
@@ -14,6 +15,8 @@ export function LobbyPage() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [lobbyMic, setLobbyMic] = useState(() => loadLobbyMediaDefaults().micOn)
+  const [lobbyCam, setLobbyCam] = useState(() => loadLobbyMediaDefaults().camOn)
 
   const trimmedNick = nickname.trim()
   const canAct = trimmedNick.length > 0
@@ -24,11 +27,12 @@ export function LobbyPage() {
     setBusy(true)
     try {
       setStoredDisplayName(trimmedNick)
+      saveLobbyMediaDefaults(lobbyMic, lobbyCam)
       const res = await fetch(`${apiOrigin()}/api/rooms`, { method: "POST" })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = (await res.json()) as { roomId?: string }
       if (!data.roomId) throw new Error("нет roomId")
-      navigate(`/room/${encodeURIComponent(data.roomId)}`)
+      navigate(`/room/${encodeURIComponent(data.roomId)}`, { state: { skipPreJoin: true } })
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -46,7 +50,8 @@ export function LobbyPage() {
     setErr(null)
     setStoredDisplayName(trimmedNick)
     const code = raw.replace(/^.*\/room\//, "").split("/")[0].split("?")[0]
-    navigate(`/room/${encodeURIComponent(code)}`)
+    saveLobbyMediaDefaults(lobbyMic, lobbyCam)
+    navigate(`/room/${encodeURIComponent(code)}`, { state: { skipPreJoin: false } })
   }
 
   return (
@@ -69,6 +74,31 @@ export function LobbyPage() {
             placeholder="Как вас видят в эфире"
             maxLength={64}
           />
+        </div>
+
+        <div className="flex flex-wrap gap-4 text-sm">
+          <label className="flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              checked={lobbyMic}
+              onChange={(e) => {
+                setLobbyMic(e.target.checked)
+                saveLobbyMediaDefaults(e.target.checked, lobbyCam)
+              }}
+            />
+            Микрофон при входе
+          </label>
+          <label className="flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              checked={lobbyCam}
+              onChange={(e) => {
+                setLobbyCam(e.target.checked)
+                saveLobbyMediaDefaults(lobbyMic, e.target.checked)
+              }}
+            />
+            Камера при входе
+          </label>
         </div>
 
         <button
