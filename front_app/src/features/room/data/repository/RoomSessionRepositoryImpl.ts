@@ -14,6 +14,7 @@ import { waitIceGathering } from "../webrtc/iceGathering"
 import { stopTrackSafe } from "../webrtc/blackVideoTrack"
 import { createMediaMutex } from "../webrtc/mediaMutex"
 import { copyLocalSdpToClipboard } from "../webrtc/sdpClipboard"
+import { sanitizeWhepAnswerForChrome } from "../webrtc/sanitizeWhepAnswerSdp"
 
 const ICE: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }]
 const WS_HEARTBEAT_MS = 25_000
@@ -449,7 +450,11 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
         await pc.setLocalDescription(offer)
         await waitIceGathering(pc)
         void copyLocalSdpToClipboard(pc.localDescription?.sdp, `WHEP → ${remotePeer.slice(0, 8)}…`)
-        const answerSdp = await this._postSdp("/api/rtc/whep", remotePeer, pc.localDescription!.sdp)
+        const rawAnswer = await this._postSdp("/api/rtc/whep", remotePeer, pc.localDescription!.sdp)
+        const answerSdp = sanitizeWhepAnswerForChrome(rawAnswer)
+        if (answerSdp !== rawAnswer) {
+          logRoomData.warn("WHEP answer SDP sanitized (multi-ssrc / Unified Plan)", { remote: remotePeer.slice(0, 8) })
+        }
         await pc.setRemoteDescription({ type: "answer", sdp: answerSdp })
         logRoomData.info("WHEP setRemoteDescription done", { remote: remotePeer.slice(0, 8) })
         this._flushDiagnostics()
