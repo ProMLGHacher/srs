@@ -1,9 +1,9 @@
 import { Toast } from "@/app/presentation/ui/Toast"
-import { getStoredDisplayName } from "@/app/profile/displayName"
+import { getStoredDisplayName, setStoredDisplayName } from "@/app/profile/displayName"
 import { loadLobbyMediaDefaults } from "@/app/profile/lobbyMediaPrefs"
 import type { RoomSessionInitOptions } from "../../domain/model/roomSessionInit"
 import { useViewModel, useStateFlow } from "@kvt/react"
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
+import { type FormEvent, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
 import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router"
 import type { RoomMember } from "../../domain/model/roomMember"
 import { RoomViewModel } from "../view_model/RoomViewModel"
@@ -12,6 +12,7 @@ import { ParticipantTile } from "./ParticipantTile"
 import { ParticipantsDrawer } from "./ParticipantsDrawer"
 import { PreJoinModal } from "./PreJoinModal"
 import { RoomDebugPanel } from "./RoomDebugPanel"
+import { roomConnectionStatusLabel } from "./roomConnectionStatus"
 import { getPeerVolume, setPeerVolume } from "./peerVolumeStorage"
 
 function hasLiveVideo(stream: MediaStream | null | undefined): boolean {
@@ -33,7 +34,11 @@ export function RoomPage(_: unknown, VM = RoomViewModel) {
   const location = useLocation()
   const { roomId: roomIdParam } = useParams()
   const roomId = roomIdParam ? decodeURIComponent(roomIdParam) : ""
-  const displayName = getStoredDisplayName()
+
+  /** Подтверждённый ник (без редиректа на `/` при прямой ссылке — избегаем циклов навигации). */
+  const [displayName, setDisplayName] = useState(() => getStoredDisplayName().trim())
+  const [nicknameDraft, setNicknameDraft] = useState(() => getStoredDisplayName())
+
   const [, bumpVolume] = useReducer((n: number) => n + 1, 0)
   const [participantsOpen, setParticipantsOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
@@ -51,7 +56,7 @@ export function RoomPage(_: unknown, VM = RoomViewModel) {
   const entryInit = skipPreJoin ? skipEntryInit : manualEntry
 
   useEffect(() => {
-    if (!roomId || !displayName.trim() || !entryInit) return
+    if (!roomId || !displayName || !entryInit) return
     vm.attachRoom(roomId, displayName, entryInit)
   }, [vm, roomId, displayName, entryInit])
 
@@ -82,18 +87,61 @@ export function RoomPage(_: unknown, VM = RoomViewModel) {
     )
   }, [])
 
+  function confirmNickname(e: FormEvent): void {
+    e.preventDefault()
+    const t = nicknameDraft.trim()
+    if (!t) return
+    setStoredDisplayName(t)
+    setDisplayName(t)
+  }
+
   if (!roomId) {
     return <Navigate to="/" replace />
   }
-  if (!displayName.trim()) {
-    return <Navigate to="/" replace />
+
+  if (!displayName) {
+    return (
+      <div className="min-h-screen bg-[var(--kvt-color-surface)] px-4 py-10 text-[var(--kvt-color-on-surface)]">
+        <p className="text-sm">
+          <Link to="/" className="text-[var(--kvt-color-primary)] underline">
+            ← На главную
+          </Link>
+        </p>
+        <h1 className="mt-4 text-xl font-semibold">Комната {roomId}</h1>
+        <p className="mt-2 text-sm text-[var(--kvt-color-on-surface-variant)]">
+          Введите никнейм — так вас увидят участники. Без редиректа: можно открыть ссылку с любого устройства и сразу указать имя здесь.
+        </p>
+        <form className="mt-6 max-w-md space-y-4" onSubmit={confirmNickname}>
+          <label htmlFor="room-nick" className="block text-sm font-medium">
+            Никнейм
+          </label>
+          <input
+            id="room-nick"
+            className="w-full rounded-lg border border-white/15 bg-[var(--kvt-color-surface)] px-3 py-2"
+            value={nicknameDraft}
+            onChange={(e) => setNicknameDraft(e.target.value)}
+            placeholder="Как вас видят в эфире"
+            maxLength={64}
+            autoComplete="nickname"
+            autoFocus
+          />
+          <button
+            type="submit"
+            className="rounded-lg bg-[var(--kvt-color-primary)] px-4 py-2 font-medium text-[var(--kvt-color-on-primary)] disabled:opacity-45"
+            disabled={!nicknameDraft.trim()}
+          >
+            Продолжить
+          </button>
+        </form>
+      </div>
+    )
   }
 
   if (!skipPreJoin && !manualEntry) {
     return (
       <>
         <PreJoinModal
-          onCancel={() => navigate("/")}
+          onCancel={() => navigate("/", { replace: true })}
           onConfirm={({ stream, micOn, camOn }) => {
             setManualEntry({ initialMicOn: micOn, initialCamOn: camOn, localPreviewStream: stream })
           }}
@@ -110,6 +158,8 @@ export function RoomPage(_: unknown, VM = RoomViewModel) {
     snap.localCamOn &&
     hasLiveVideo(localStream)
 
+  const statusLine = roomConnectionStatusLabel(snap)
+
   return (
     <div className="min-h-screen bg-[var(--kvt-color-surface)] pb-28 text-[var(--kvt-color-on-surface)]">
       <div className="mx-auto max-w-6xl px-4 pt-4">
@@ -119,6 +169,7 @@ export function RoomPage(_: unknown, VM = RoomViewModel) {
           </Link>
         </p>
         <h1 className="mt-2 text-xl font-semibold">Комната {roomId}</h1>
+        <p className="mt-1 text-sm text-[var(--kvt-color-on-surface-variant)]">{statusLine}</p>
         {snap.error ? <p className="mt-2 text-sm text-red-300">{snap.error}</p> : null}
 
         <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -160,7 +211,7 @@ export function RoomPage(_: unknown, VM = RoomViewModel) {
         copyBusy={copyBusy}
         onToggleMic={() => vm.setLocalMic(!snap.localMicOn)}
         onToggleCam={() => vm.setLocalCam(!snap.localCamOn)}
-        onLeave={() => navigate("/")}
+        onLeave={() => navigate("/", { replace: true })}
         onCopyLink={onCopyLink}
         onToggleParticipants={() => setParticipantsOpen((o) => !o)}
       />
