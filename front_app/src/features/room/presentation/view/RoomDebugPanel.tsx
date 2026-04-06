@@ -55,13 +55,23 @@ export function RoomDebugPanel({ snap, localPeerId }: RoomDebugPanelProps) {
         <div className="rounded-md border border-white/10 bg-black/20 p-3 font-mono text-xs">
           <p className="mb-2 font-sans text-[11px] font-medium text-[var(--kvt-color-primary)]">Комната / медиа</p>
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+            <dt className="text-[var(--kvt-color-on-surface-variant)]">roomId</dt>
+            <dd className="break-all">{snap.roomId || "—"}</dd>
             <dt className="text-[var(--kvt-color-on-surface-variant)]">localPeer</dt>
             <dd className="break-all">{localPeerId}</dd>
+            <dt className="text-[var(--kvt-color-on-surface-variant)]">nickname</dt>
+            <dd className="break-all">{snap.localNickname || "—"}</dd>
+            <dt className="text-[var(--kvt-color-on-surface-variant)]">mic / cam</dt>
+            <dd>
+              {String(snap.localMicOn)} / {String(snap.localCamOn)}
+            </dd>
             <dt className="text-[var(--kvt-color-on-surface-variant)]">isPublishing</dt>
             <dd>{String(snap.isPublishing)}</dd>
             <dt className="text-[var(--kvt-color-on-surface-variant)]">mediaEpoch</dt>
             <dd>{snap.mediaEpoch}</dd>
-            <dt className="text-[var(--kvt-color-on-surface-variant)]">remotePeerIds</dt>
+            <dt className="text-[var(--kvt-color-on-surface-variant)]">members</dt>
+            <dd>{snap.members.length}</dd>
+            <dt className="text-[var(--kvt-color-on-surface-variant)]">remotePeerIds (WHEP)</dt>
             <dd className="break-all">{snap.remotePeerIds.length ? snap.remotePeerIds.join(", ") : "—"}</dd>
           </dl>
         </div>

@@ -8,11 +8,15 @@ import type { RoomPageSnapshot } from "../model/roomPageSnapshot"
 export abstract class RoomSessionRepository {
   abstract readonly state: StateFlow<RoomPageSnapshot>
 
-  abstract initialize(roomId: string, peerId: string): void
+  abstract initialize(roomId: string, peerId: string, nickname: string): void
   abstract dispose(): void
 
   abstract startPublishing(): Promise<void>
   abstract stopPublishing(): void
+
+  /** Отправить на сервер и применить к локальным трекам (если есть). */
+  abstract setLocalMicEnabled(on: boolean): void
+  abstract setLocalCamEnabled(on: boolean): void
 
   abstract getRemoteStream(peerId: string): MediaStream | undefined
   abstract getLocalPreviewStream(): MediaStream | null

@@ -1,18 +1,24 @@
 import type { RtcPeerDiagnostics, WsReadyStateLabel } from "./roomDiagnostics"
+import type { RoomMember } from "./roomMember"
 
 /** Снимок UI комнаты: без MediaStream — потоки запрашиваются у репозитория по peerId. */
 export interface RoomPageSnapshot {
+  /** Id комнаты (для копирования ссылки). */
+  roomId: string
   wsReady: boolean
   wsReadyState: WsReadyStateLabel
-  /** URL вебсокета сигналинга (для отладки). */
   signalingWsUrl: string
   isPublishing: boolean
   error: string | null
+  /** Участники комнаты (сигналинг). */
+  members: readonly RoomMember[]
   remotePeerIds: readonly string[]
-  /** Инкремент при смене локального/удалённого MediaStream для перерисовки video. */
   mediaEpoch: number
-  /** WHIP: локальный peer connection. */
   publishPeer: RtcPeerDiagnostics | null
-  /** WHEP: по одному PC на удалённого издателя. */
   subscribePeers: readonly RtcPeerDiagnostics[]
+  /** Локальный ник (вошедший пользователь). */
+  localNickname: string
+  /** Локальные переключатели мик/кам (и для presence). */
+  localMicOn: boolean
+  localCamOn: boolean
 }

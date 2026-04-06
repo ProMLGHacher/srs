@@ -22,14 +22,22 @@ export class RoomViewModel implements ViewModel<RoomPageSnapshot> {
     }
   }
 
-  attachRoom(roomId: string): void {
-    logRoomPresentation.info("attachRoom", { roomId })
+  attachRoom(roomId: string, nickname: string): void {
+    logRoomPresentation.info("attachRoom", { roomId, nickname })
     this._repo.dispose()
-    this._repo.initialize(roomId, this._peer.getOrCreatePeerId())
+    this._repo.initialize(roomId, this._peer.getOrCreatePeerId(), nickname)
   }
 
   getPeerId(): string {
     return this._peer.getOrCreatePeerId()
+  }
+
+  setLocalMic(on: boolean): void {
+    this._repo.setLocalMicEnabled(on)
+  }
+
+  setLocalCam(on: boolean): void {
+    this._repo.setLocalCamEnabled(on)
   }
 
   startPublish(): Promise<void> {

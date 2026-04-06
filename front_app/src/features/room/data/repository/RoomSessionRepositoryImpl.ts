@@ -1,5 +1,7 @@
 import { logRoomData } from "@/app/logging/kvtAppLog"
+import { buildGUMConstraints } from "@/app/media/mediaPrefs"
 import { MutableStateFlow } from "@kvt/runtime"
+import type { RoomMember } from "../../domain/model/roomMember"
 import type { SignalingInbound } from "../../domain/model/signalingInbound"
 import type { RoomPageSnapshot } from "../../domain/model/roomPageSnapshot"
 import type { RtcPeerDiagnostics, WsReadyStateLabel } from "../../domain/model/roomDiagnostics"
@@ -10,8 +12,6 @@ import { waitIceGathering } from "../webrtc/iceGathering"
 import { copyLocalSdpToClipboard } from "../webrtc/sdpClipboard"
 
 const ICE: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }]
-
-/** Чаще простоев прокси/nginx (~60s); держим канал живым. */
 const WS_HEARTBEAT_MS = 25_000
 
 function signalingWsUrl(): string {
@@ -26,15 +26,20 @@ function signalingWsUrl(): string {
 }
 
 const initialSnapshot = (): RoomPageSnapshot => ({
+  roomId: "",
   wsReady: false,
   wsReadyState: "NONE",
   signalingWsUrl: "",
   isPublishing: false,
   error: null,
+  members: [],
   remotePeerIds: [],
   mediaEpoch: 0,
   publishPeer: null,
   subscribePeers: [],
+  localNickname: "",
+  localMicOn: true,
+  localCamOn: true,
 })
 
 const ICE_FAILED_HINT =
@@ -71,13 +76,12 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
   private readonly _state = new MutableStateFlow<RoomPageSnapshot>(initialSnapshot())
   override readonly state = this._state.asStateFlow()
 
-  /** Не слать ошибки в state из колбэков закрытых PC во время dispose/перезапуска сессии. */
   private _sessionGeneration = 0
-  /** Игнорировать failed/disconnected публикации после явного stop. */
   private _publishLifecycleIgnore = false
 
   private _roomId = ""
   private _peerId = ""
+  private _nickname = ""
   private _ws: WebSocket | null = null
   private _publishPc: RTCPeerConnection | null = null
   private _localStream: MediaStream | null = null
@@ -92,7 +96,6 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
     }
   }
 
-  /** Прикладной ping → сервер отвечает pong (обход idle-timeout прокси/CDN). */
   private _startHeartbeat(ws: WebSocket): void {
     this._stopHeartbeat()
     this._heartbeatTimer = setInterval(() => {
@@ -132,6 +135,13 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
     })
   }
 
+  private _sendPresenceWS(): void {
+    const w = this._ws
+    if (!w || w.readyState !== WebSocket.OPEN) return
+    const { localMicOn, localCamOn } = this._state.value
+    w.send(JSON.stringify({ t: "presence", micOn: localMicOn, camOn: localCamOn }))
+  }
+
   private async _postSdp(path: string, qPeer: string, sdp: string): Promise<string> {
     const url = `${this._base}${path}?peer=${encodeURIComponent(qPeer)}`
     logRoomData.debug("POST SDP", { path, peer: qPeer.slice(0, 8), base: this._base || "(same-origin)" })
@@ -149,16 +159,19 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
     return text
   }
 
-  override initialize(roomId: string, peerId: string): void {
+  override initialize(roomId: string, peerId: string, nickname: string): void {
     this.dispose()
     const gen = this._sessionGeneration
     this._roomId = roomId
     this._peerId = peerId
+    this._nickname = nickname.trim()
     const sigUrl = signalingWsUrl()
     this._state.set({
       ...initialSnapshot(),
+      roomId,
       signalingWsUrl: sigUrl,
       wsReadyState: "CONNECTING",
+      localNickname: this._nickname,
     })
     logRoomData.info("session initialize", { roomId, peerId: peerId.slice(0, 8), signalingWsUrl: sigUrl })
 
@@ -167,7 +180,7 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
     this._flushDiagnostics()
 
     const cleanupSub = (remotePeer: string): void => {
-      logRoomData.info("subscribe cleanup", { remotePeer: remotePeer.slice(0, 8) })
+      logRoomData.info("subscribe cleanup", { remote: remotePeer.slice(0, 8) })
       const pc = this._subs.get(remotePeer)
       if (pc) {
         pc.close()
@@ -257,6 +270,17 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
       }
     }
 
+    const subscribePublishersInMembers = (members: readonly RoomMember[]): void => {
+      for (const m of members) {
+        if (m.publishing && m.peerId !== this._peerId) void subscribePeer(m.peerId)
+      }
+    }
+
+    const patchMember = (peerId: string, patch: Partial<RoomMember>): void => {
+      const members = this._state.value.members.map((m) => (m.peerId === peerId ? { ...m, ...patch } : m))
+      this._state.update({ members })
+    }
+
     const onMessage = (ev: MessageEvent): void => {
       let msg: SignalingInbound
       try {
@@ -269,16 +293,43 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
         logRoomData.debug("WS heartbeat pong")
         return
       }
-      if (msg.t === "state" && Array.isArray(msg.publishers)) {
-        msg.publishers.forEach((p) => void subscribePeer(p))
+      if (msg.t === "state" && Array.isArray(msg.members)) {
+        this._state.update({ members: msg.members })
+        subscribePublishersInMembers(msg.members)
         return
       }
-      if (msg.t === "peer-publish" && msg.peerId) {
-        void subscribePeer(msg.peerId)
+      if (msg.t === "peer-join") {
+        const nm: RoomMember = {
+          peerId: msg.peerId,
+          nickname: msg.nickname,
+          publishing: msg.publishing,
+          micOn: msg.micOn,
+          camOn: msg.camOn,
+        }
+        const others = this._state.value.members.filter((m) => m.peerId !== msg.peerId)
+        this._state.update({ members: [...others, nm] })
+        if (msg.publishing && msg.peerId !== this._peerId) void subscribePeer(msg.peerId)
         return
       }
-      if (msg.t === "peer-unpublish" && msg.peerId) {
+      if (msg.t === "peer-leave") {
         cleanupSub(msg.peerId)
+        this._state.update({
+          members: this._state.value.members.filter((m) => m.peerId !== msg.peerId),
+        })
+        return
+      }
+      if (msg.t === "peer-presence") {
+        patchMember(msg.peerId, { micOn: msg.micOn, camOn: msg.camOn })
+        return
+      }
+      if (msg.t === "peer-publish") {
+        patchMember(msg.peerId, { publishing: true })
+        if (msg.peerId !== this._peerId) void subscribePeer(msg.peerId)
+        return
+      }
+      if (msg.t === "peer-unpublish") {
+        cleanupSub(msg.peerId)
+        patchMember(msg.peerId, { publishing: false })
         return
       }
       if (msg.t === "error" && msg.message) {
@@ -291,7 +342,15 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
       logRoomData.info("WebSocket open", { roomId })
       this._state.update({ error: null, wsReady: true })
       this._flushDiagnostics()
-      ws.send(JSON.stringify({ t: "join", roomId: this._roomId, peerId: this._peerId }))
+      ws.send(
+        JSON.stringify({
+          t: "join",
+          roomId: this._roomId,
+          peerId: this._peerId,
+          nickname: this._nickname,
+        }),
+      )
+      this._sendPresenceWS()
       this._startHeartbeat(ws)
     }
 
@@ -337,15 +396,36 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
     this._state.set(initialSnapshot())
   }
 
+  override setLocalMicEnabled(on: boolean): void {
+    this._state.update({ localMicOn: on })
+    this._localStream?.getAudioTracks().forEach((t) => {
+      t.enabled = on
+    })
+    this._sendPresenceWS()
+  }
+
+  override setLocalCamEnabled(on: boolean): void {
+    this._state.update({ localCamOn: on })
+    this._localStream?.getVideoTracks().forEach((t) => {
+      t.enabled = on
+    })
+    this._sendPresenceWS()
+  }
+
   override async startPublishing(): Promise<void> {
     logRoomData.info("WHIP startPublishing")
     this._state.update({ error: null })
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: { width: { ideal: 640 }, facingMode: "user" },
-      })
+      const { audio, video } = buildGUMConstraints()
+      const stream = await navigator.mediaDevices.getUserMedia({ audio, video })
       logRoomData.info("getUserMedia ok", { tracks: stream.getTracks().map((t) => t.kind) })
+      const { localMicOn, localCamOn } = this._state.value
+      stream.getAudioTracks().forEach((t) => {
+        t.enabled = localMicOn
+      })
+      stream.getVideoTracks().forEach((t) => {
+        t.enabled = localCamOn
+      })
       this._localStream = stream
       this._bumpMediaEpoch()
 

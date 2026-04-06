@@ -12,7 +12,7 @@ export function RootLayout() {
               isActive ? "font-medium text-[var(--kvt-color-primary)]" : "text-[var(--kvt-color-on-surface-variant)]"
             }
           >
-            Комната
+            Главная
           </NavLink>
         </nav>
       </header>

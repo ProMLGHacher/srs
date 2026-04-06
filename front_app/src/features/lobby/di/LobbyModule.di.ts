@@ -1,7 +1,7 @@
 import { DiModule } from "@kvt/runtime"
 
 DiModule.register({
-  nameSpace: "app",
-  nameSpaceDependencies: ["lobby", "room"],
+  nameSpace: "lobby",
+  nameSpaceDependencies: [],
   builder: () => {},
 })

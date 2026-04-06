@@ -1,5 +1,23 @@
-node_modules
-**/node_modules
-front/dist
+# Git
 .git
+.gitignore
+
+# Документация и IDE
 *.md
+.cursor
+.vscode
+
+# Фронт: не тащить хостовый node_modules/dist в контекст
+front_app/node_modules
+front_app/dist
+front_app/.env
+front_app/.env.*
+
+# Легаси
+front/node_modules
+front/dist
+server/node_modules
+
+# Прочее
+.env
+**/.DS_Store

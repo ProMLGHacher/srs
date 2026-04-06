@@ -1,5 +1,12 @@
 node_modules/
-dist/
 .env
 .DS_Store
 *.log
+
+# Сборки фронта (не путать с placeholder для Go embed ниже)
+front_app/dist/
+front/dist/
+
+# Go (локальные бинарники)
+/backend/server
+/server
