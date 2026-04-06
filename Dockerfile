@@ -1,8 +1,8 @@
 FROM node:20-alpine AS front-build
 WORKDIR /build
-COPY front/package.json ./
-RUN npm install
-COPY front/ ./
+COPY front_app/package.json front_app/package-lock.json ./
+RUN npm ci
+COPY front_app/ ./
 RUN npm run build
 
 FROM node:20-alpine

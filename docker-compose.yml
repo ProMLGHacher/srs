@@ -1,3 +1,6 @@
+# Для звонка с ДВУХ устройств в LAN задайте SRS_CANDIDATE_IP — IPv4 хоста с Docker (ifconfig / ip a),
+# например: SRS_CANDIDATE_IP=192.168.1.10 docker compose up
+# Иначе в SDP попадёт 127.0.0.1: второй клиент шлёт медиа на «сам себя», ICE → failed, в логах SRS — timeout / deliver=0.
 services:
   srs:
     image: ossrs/srs:6
