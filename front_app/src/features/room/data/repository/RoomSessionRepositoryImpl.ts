@@ -278,13 +278,26 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
     await pc.setRemoteDescription({ type: "answer", sdp: answerSdp })
   }
 
-  private async _renegotiatePublishPc(pubGen: number): Promise<void> {
-    const pc = this._publishPc
-    if (!pc) return
-    logRoomData.info("WHIP renegotiate (video added after audio-only publish)")
-    this._ensurePublishVideoCodecPreferences(pc)
-    await this._finalizeWhipNegotiation(pc, pubGen, "WHIP publish renegotiate")
+  /**
+   * После публикации только с аудио второй POST на тот же WHIP/stream у SRS даёт 502/EOF — ренегоциация не поддерживается.
+   * Закрываем PC, unpublish, новый полный WHIP; локальный MediaStream не трогаем.
+   */
+  private _restartPublishKeepingMedia(pubGen: number): void {
+    if (pubGen !== this._sessionGeneration) return
+    logRoomData.info("WHIP restart publish (video после audio-only: новый WHIP вместо renegotiate)")
+    this._publishLifecycleIgnore = true
+    const w = this._ws
+    if (w && w.readyState === WebSocket.OPEN) {
+      w.send(JSON.stringify({ t: "unpublish" }))
+    }
+    this._publishPc?.close()
+    this._publishPc = null
+    this._state.update({ isPublishing: false })
+    this._bumpMediaEpoch()
     this._flushDiagnostics()
+    queueMicrotask(() => {
+      void this.startPublishing()
+    })
   }
 
   private async _syncPublishVideoSender(): Promise<void> {
@@ -304,9 +317,7 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
       return
     }
     if (vt && !videoTr) {
-      pc.addTrack(vt, stream)
-      if (pubGen !== this._sessionGeneration) return
-      await this._renegotiatePublishPc(pubGen)
+      this._restartPublishKeepingMedia(pubGen)
     }
   }
 
