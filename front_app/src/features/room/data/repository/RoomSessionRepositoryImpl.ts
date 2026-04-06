@@ -411,9 +411,16 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
       const pc = new RTCPeerConnection({ iceServers: ICE })
       this._subs.set(remotePeer, pc)
       attachPcStateLogging(remotePeer, pc)
-      pc.addTransceiver("audio", { direction: "recvonly" })
-      const videoRx = pc.addTransceiver("video", { direction: "recvonly" })
-      applyH264VideoOnly(videoRx, "subscribe")
+      const member = this._state.value.members.find((m) => m.peerId === remotePeer)
+      const subscribeAudioOnly = member ? !member.camOn : false
+      if (subscribeAudioOnly) {
+        pc.addTransceiver("audio", { direction: "recvonly" })
+      } else {
+        /* SRS: порядок m= в answer должен соответствовать offer; у потока с видео — обычно video, затем audio. */
+        const videoRx = pc.addTransceiver("video", { direction: "recvonly" })
+        applyH264VideoOnly(videoRx, "subscribe")
+        pc.addTransceiver("audio", { direction: "recvonly" })
+      }
 
       pc.ontrack = (ev) => {
         if (gen !== this._sessionGeneration) return
