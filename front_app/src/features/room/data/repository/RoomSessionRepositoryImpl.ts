@@ -6,12 +6,12 @@ import type { RoomMember } from "../../domain/model/roomMember"
 import type { SignalingInbound } from "../../domain/model/signalingInbound"
 import type { RoomPageSnapshot } from "../../domain/model/roomPageSnapshot"
 import type { RtcPeerDiagnostics, WsReadyStateLabel } from "../../domain/model/roomDiagnostics"
-import { sdpOfferIncludesH264Video } from "../../domain/sdp/videoCodecOrder"
+import { sdpOfferHasVideoMLine, sdpOfferIncludesH264Video } from "../../domain/sdp/videoCodecOrder"
 import type { RoomSessionInitOptions } from "../../domain/model/roomSessionInit"
 import { RoomSessionRepository } from "../../domain/repository/RoomSessionRepository"
 import { applyH264VideoOnly, h264VideoCodecPreferences } from "../webrtc/webrtcCodecPreferences"
 import { waitIceGathering } from "../webrtc/iceGathering"
-import { createBlackVideoTrack, stopTrackSafe } from "../webrtc/blackVideoTrack"
+import { stopTrackSafe } from "../webrtc/blackVideoTrack"
 import { createMediaMutex } from "../webrtc/mediaMutex"
 import { copyLocalSdpToClipboard } from "../webrtc/sdpClipboard"
 
@@ -65,6 +65,13 @@ function mapWsReadyState(ws: WebSocket | null): WsReadyStateLabel {
   }
 }
 
+/** В lib.dom иногда нет `kind` на transceiver; в браузере — есть. */
+function transceiverIsVideo(tr: RTCRtpTransceiver): boolean {
+  const k = (tr as RTCRtpTransceiver & { kind?: string }).kind
+  if (k === "video") return true
+  return tr.sender?.track?.kind === "video" || tr.receiver?.track?.kind === "video"
+}
+
 function peerDiag(role: RtcPeerDiagnostics["role"], targetPeerId: string, pc: RTCPeerConnection): RtcPeerDiagnostics {
   return {
     role,
@@ -93,8 +100,6 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
   private readonly _remoteStreams = new Map<string, MediaStream>()
   private _heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private _publishStarting = false
-  /** Заглушка «чёрный кадр» для SRS без камеры; не путать с реальной камерой. */
-  private _blackVideoTrack: MediaStreamTrack | null = null
   private readonly _mediaMutex = createMediaMutex()
 
   private _stopHeartbeat(): void {
@@ -168,27 +173,13 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
   }
 
   private _disposeLocalMedia(): void {
-    stopTrackSafe(this._blackVideoTrack)
-    this._blackVideoTrack = null
     if (this._localStream) {
       this._localStream.getTracks().forEach((t) => stopTrackSafe(t))
     }
     this._localStream = null
   }
 
-  private _clearBlackVideoTrack(): void {
-    const b = this._blackVideoTrack
-    if (!b) return
-    stopTrackSafe(b)
-    try {
-      this._localStream?.removeTrack(b)
-    } catch {
-      /* ignore */
-    }
-    this._blackVideoTrack = null
-  }
-
-  /** Синхронизирует MediaStream с localMicOn/localCamOn: без камеры — только чёрная заглушка (SRS + H.264 в SDP), без getUserMedia(video). */
+  /** Синхронизирует MediaStream с localMicOn/localCamOn: без камеры — только аудио (без видеотреков). */
   private async ensureLocalStreamMatchesState(): Promise<void> {
     const gen = this._sessionGeneration
     const { localMicOn, localCamOn } = this._state.value
@@ -213,13 +204,9 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
           audio,
           video: false,
         })
-        const black = createBlackVideoTrack()
-        this._blackVideoTrack = black
-        stream.addTrack(black)
       }
       if (gen !== this._sessionGeneration) {
         stream.getTracks().forEach((t) => stopTrackSafe(t))
-        this._blackVideoTrack = null
         return
       }
       this._localStream = stream
@@ -232,7 +219,6 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
     if (gen !== this._sessionGeneration) return
 
     if (localCamOn) {
-      this._clearBlackVideoTrack()
       const liveVideo = stream.getVideoTracks().filter((t) => t.readyState === "live")
       if (liveVideo.length === 0) {
         const v = await navigator.mediaDevices.getUserMedia({
@@ -254,10 +240,6 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
         stopTrackSafe(t)
         stream.removeTrack(t)
       }
-      this._blackVideoTrack = null
-      const black = createBlackVideoTrack()
-      this._blackVideoTrack = black
-      stream.addTrack(black)
     }
 
     if (gen !== this._sessionGeneration) return
@@ -265,13 +247,67 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
     this._bumpMediaEpoch()
   }
 
+  private _ensurePublishVideoCodecPreferences(pc: RTCPeerConnection): void {
+    const videoTx = pc.getTransceivers().find((tr) => transceiverIsVideo(tr))
+    if (!videoTx) return
+    if (!h264VideoCodecPreferences("publish").length) {
+      throw new Error(
+        "Среди кодеков отправки (RTCRtpSender) нет H.264 — SRS не примет WHIP. Попробуйте другое устройство или браузер.",
+      )
+    }
+    applyH264VideoOnly(videoTx, "publish")
+  }
+
+  private async _finalizeWhipNegotiation(pc: RTCPeerConnection, pubGen: number, clipboardLabel: string): Promise<void> {
+    const offer = await pc.createOffer()
+    await pc.setLocalDescription(offer)
+    await waitIceGathering(pc)
+    if (pubGen !== this._sessionGeneration) return
+    this._flushDiagnostics()
+
+    const localSdp = pc.localDescription?.sdp ?? ""
+    if (sdpOfferHasVideoMLine(localSdp) && !sdpOfferIncludesH264Video(localSdp)) {
+      throw new Error(
+        "В SDP публикации нет H.264 (часто Chrome на Android с аппаратным HEVC: в offer только VP8/VP9/AV1/H.265). SRS WHIP требует H.264 в offer. Варианты: Firefox для Android, Safari/iOS, публикация с ПК, либо цепочка с перекодированием, не «голый» SRS.",
+      )
+    }
+
+    await copyLocalSdpToClipboard(localSdp, clipboardLabel)
+    const answerSdp = await this._postSdp("/api/rtc/whip", this._peerId, localSdp)
+    if (pubGen !== this._sessionGeneration) return
+    await pc.setRemoteDescription({ type: "answer", sdp: answerSdp })
+  }
+
+  private async _renegotiatePublishPc(pubGen: number): Promise<void> {
+    const pc = this._publishPc
+    if (!pc) return
+    logRoomData.info("WHIP renegotiate (video added after audio-only publish)")
+    this._ensurePublishVideoCodecPreferences(pc)
+    await this._finalizeWhipNegotiation(pc, pubGen, "WHIP publish renegotiate")
+    this._flushDiagnostics()
+  }
+
   private async _syncPublishVideoSender(): Promise<void> {
     const pc = this._publishPc
     const stream = this._localStream
     if (!pc || !stream || !this._state.value.isPublishing) return
-    const sender = pc.getSenders().find((s) => s.track?.kind === "video")
+    const pubGen = this._sessionGeneration
     const vt = stream.getVideoTracks()[0]
-    if (sender && vt) await sender.replaceTrack(vt)
+    const videoTr = pc.getTransceivers().find((tr) => transceiverIsVideo(tr))
+
+    if (vt && videoTr) {
+      await videoTr.sender.replaceTrack(vt)
+      return
+    }
+    if (!vt && videoTr) {
+      await videoTr.sender.replaceTrack(null)
+      return
+    }
+    if (vt && !videoTr) {
+      pc.addTrack(vt, stream)
+      if (pubGen !== this._sessionGeneration) return
+      await this._renegotiatePublishPc(pubGen)
+    }
   }
 
   override initialize(roomId: string, peerId: string, nickname: string, opts?: RoomSessionInitOptions): void {
@@ -608,29 +644,9 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
       pc.onsignalingstatechange = () => logPublishStates("signalingstatechange")
 
       stream.getTracks().forEach((t) => pc.addTrack(t, stream))
-      const videoTx = pc.getTransceivers().find((tr) => tr.sender?.track?.kind === "video")
-      if (!h264VideoCodecPreferences("publish").length) {
-        throw new Error(
-          "Среди кодеков отправки (RTCRtpSender) нет H.264 — SRS не примет WHIP. Попробуйте другое устройство или браузер.",
-        )
-      }
-      if (videoTx) applyH264VideoOnly(videoTx, "publish")
-
-      const offer = await pc.createOffer()
-      await pc.setLocalDescription(offer)
-      await waitIceGathering(pc)
-      this._flushDiagnostics()
-
-      const localSdp = pc.localDescription?.sdp
-      if (!sdpOfferIncludesH264Video(localSdp ?? "")) {
-        throw new Error(
-          "В SDP публикации нет H.264 (часто Chrome на Android с аппаратным HEVC: в offer только VP8/VP9/AV1/H.265). SRS WHIP требует H.264 в offer. Варианты: Firefox для Android, Safari/iOS, публикация с ПК, либо цепочка с перекодированием, не «голый» SRS.",
-        )
-      }
-
-      await copyLocalSdpToClipboard(localSdp, "WHIP publish")
-      const answerSdp = await this._postSdp("/api/rtc/whip", this._peerId, localSdp!)
-      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp })
+      this._ensurePublishVideoCodecPreferences(pc)
+      await this._finalizeWhipNegotiation(pc, pubGen, "WHIP publish")
+      if (pubGen !== this._sessionGeneration) return
 
       this._state.update({ isPublishing: true })
       this._flushDiagnostics()

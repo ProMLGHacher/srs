@@ -34,6 +34,11 @@ export function reorderVideoCodecsH264First<T extends VideoCodecCapability>(code
   return [...front, ...tail]
 }
 
+/** Есть ли в SDP секция m=video. */
+export function sdpOfferHasVideoMLine(sdp: string): boolean {
+  return !!sdp && /^m=video /m.test(sdp)
+}
+
 /** SRS проверяет rtpmap H264 в видео-блоке SDP. */
 export function sdpOfferIncludesH264Video(sdp: string): boolean {
   if (!sdp) return false
