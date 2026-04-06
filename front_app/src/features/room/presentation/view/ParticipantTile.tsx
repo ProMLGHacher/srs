@@ -72,7 +72,13 @@ export function ParticipantTile({
       ) : null}
 
       {showVideo && stream ? (
-        <video ref={videoRef} className="h-full w-full object-cover" autoPlay playsInline muted={isLocal} />
+        <video
+          ref={videoRef}
+          className={`h-full w-full object-cover ${isLocal ? "[transform:scaleX(-1)]" : ""}`}
+          autoPlay
+          playsInline
+          muted={isLocal}
+        />
       ) : (
         <div className="flex h-full items-center justify-center px-2">
           <span className="text-center text-xl font-bold uppercase tracking-wide text-white/90 md:text-2xl">

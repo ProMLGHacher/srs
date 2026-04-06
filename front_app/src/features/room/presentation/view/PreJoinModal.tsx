@@ -75,7 +75,13 @@ export function PreJoinModal({ onConfirm, onCancel }: PreJoinModalProps) {
 
         <div className="mt-4 aspect-video overflow-hidden rounded-lg bg-black">
           {preview ? (
-            <video ref={videoRef} className="h-full w-full object-cover" autoPlay playsInline muted />
+            <video
+              ref={videoRef}
+              className="h-full w-full object-cover [transform:scaleX(-1)]"
+              autoPlay
+              playsInline
+              muted
+            />
           ) : (
             <div className="flex h-full items-center justify-center px-2 text-center text-sm text-white/60">
               {err || "Запрос доступа к камере и микрофону…"}

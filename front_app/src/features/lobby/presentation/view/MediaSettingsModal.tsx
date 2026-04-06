@@ -85,7 +85,13 @@ export function MediaSettingsModal({ open, onClose }: MediaSettingsModalProps) {
 
         <div className="mt-4 aspect-video max-h-48 overflow-hidden rounded-lg bg-black">
           {preview ? (
-            <video ref={previewVideoRef} className="h-full w-full object-cover" autoPlay playsInline muted />
+            <video
+              ref={previewVideoRef}
+              className="h-full w-full object-cover [transform:scaleX(-1)]"
+              autoPlay
+              playsInline
+              muted
+            />
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-white/50">{err || "Загрузка превью…"}</div>
           )}
