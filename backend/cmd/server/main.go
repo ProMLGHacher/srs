@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -38,34 +40,54 @@ func cors(next http.Handler) http.Handler {
 	})
 }
 
-// spaHandler отдаёт статику из embed и для любых «логических» путей SPA (/room/..., /settings, …)
-// всегда index.html без 301 от http.FileServer (иначе /room/id может превратиться в /room/ с Location: ./).
-func spaHandler(fsys fs.FS, file http.Handler) http.Handler {
+// spaHandler отдаёт статику из embed; для маршрутов SPA (/room/..., …) — тело index.html без http.FileServer.
+// FileServer при подстановке пути давал 301: у входящего запроса оставался RequestURI=/room/id.
+func spaHandler(fsys fs.FS) http.Handler {
+	indexHTML, err := fs.ReadFile(fsys, "index.html")
+	if err != nil {
+		log.Fatal("static: index.html: ", err)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		p := strings.TrimPrefix(r.URL.Path, "/")
-		if p == "" {
+		p := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+		if p == "" || p == "." {
 			p = "index.html"
 		}
 		if !isEmbeddedStaticFile(p) {
-			r2 := r.Clone(r.Context())
-			r2.URL.Path = "/index.html"
-			file.ServeHTTP(w, r2)
+			serveIndexHTML(w, r, indexHTML)
 			return
 		}
 		f, err := fsys.Open(p)
 		if err != nil {
-			r2 := r.Clone(r.Context())
-			r2.URL.Path = "/index.html"
-			file.ServeHTTP(w, r2)
+			serveIndexHTML(w, r, indexHTML)
 			return
 		}
+		st, err := f.Stat()
+		if err != nil || st.IsDir() {
+			_ = f.Close()
+			serveIndexHTML(w, r, indexHTML)
+			return
+		}
+		body, err := io.ReadAll(f)
 		_ = f.Close()
-		file.ServeHTTP(w, r)
+		if err != nil {
+			serveIndexHTML(w, r, indexHTML)
+			return
+		}
+		http.ServeContent(w, r, p, st.ModTime(), bytes.NewReader(body))
 	})
+}
+
+func serveIndexHTML(w http.ResponseWriter, r *http.Request, indexHTML []byte) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write(indexHTML)
 }
 
 // Только реальные файлы из dist: корень (index, favicon), assets/*, типичные расширения. Не /room/...
@@ -107,7 +129,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fileServer := http.FileServer(http.FS(fsys))
 
 	upgrader := websocket.Upgrader{
 		ReadBufferSize:  1024,
@@ -188,7 +209,7 @@ func main() {
 		}
 	})
 
-	mux.Handle("/", spaHandler(fsys, fileServer))
+	mux.Handle("/", spaHandler(fsys))
 
 	handler := cors(mux)
 	srv := &http.Server{
