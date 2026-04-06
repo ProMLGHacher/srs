@@ -209,6 +209,10 @@ wss.on("connection", (ws) => {
       return;
     }
     const t = msg.t;
+    if (t === "ping") {
+      safeSend(ws, { t: "pong" });
+      return;
+    }
     if (t === "join") {
       const roomId = msg.roomId != null ? String(msg.roomId) : "";
       const peerId = msg.peerId != null ? String(msg.peerId) : "";

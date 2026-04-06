@@ -11,6 +11,9 @@ import { copyLocalSdpToClipboard } from "../webrtc/sdpClipboard"
 
 const ICE: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }]
 
+/** Чаще простоев прокси/nginx (~60s); держим канал живым. */
+const WS_HEARTBEAT_MS = 25_000
+
 function signalingWsUrl(): string {
   const explicit = import.meta.env.VITE_SIGNAL_WS
   if (explicit) return explicit
@@ -80,6 +83,31 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
   private _localStream: MediaStream | null = null
   private readonly _subs = new Map<string, RTCPeerConnection>()
   private readonly _remoteStreams = new Map<string, MediaStream>()
+  private _heartbeatTimer: ReturnType<typeof setInterval> | null = null
+
+  private _stopHeartbeat(): void {
+    if (this._heartbeatTimer != null) {
+      clearInterval(this._heartbeatTimer)
+      this._heartbeatTimer = null
+    }
+  }
+
+  /** Прикладной ping → сервер отвечает pong (обход idle-timeout прокси/CDN). */
+  private _startHeartbeat(ws: WebSocket): void {
+    this._stopHeartbeat()
+    this._heartbeatTimer = setInterval(() => {
+      if (this._ws !== ws || ws.readyState !== WebSocket.OPEN) {
+        this._stopHeartbeat()
+        return
+      }
+      try {
+        ws.send(JSON.stringify({ t: "ping" }))
+        logRoomData.debug("WS heartbeat ping")
+      } catch (e) {
+        logRoomData.warn("WS heartbeat send failed", e)
+      }
+    }, WS_HEARTBEAT_MS)
+  }
 
   private get _base(): string {
     return import.meta.env.VITE_SIGNAL_URL || ""
@@ -237,6 +265,10 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
         return
       }
       logRoomData.debug("WS inbound", { t: msg.t })
+      if (msg.t === "pong") {
+        logRoomData.debug("WS heartbeat pong")
+        return
+      }
       if (msg.t === "state" && Array.isArray(msg.publishers)) {
         msg.publishers.forEach((p) => void subscribePeer(p))
         return
@@ -260,18 +292,21 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
       this._state.update({ error: null, wsReady: true })
       this._flushDiagnostics()
       ws.send(JSON.stringify({ t: "join", roomId: this._roomId, peerId: this._peerId }))
+      this._startHeartbeat(ws)
     }
 
     ws.onmessage = onMessage
 
     ws.onerror = () => {
       logRoomData.error("WebSocket error")
+      this._stopHeartbeat()
       this._state.update({ error: "WebSocket: ошибка соединения" })
       this._flushDiagnostics()
     }
 
     ws.onclose = (ev) => {
       logRoomData.warn("WebSocket close", { code: ev.code, reason: ev.reason })
+      this._stopHeartbeat()
       if (this._ws === ws) this._ws = null
       this._state.update({ wsReady: false })
       this._flushDiagnostics()
@@ -280,6 +315,7 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
 
   override dispose(): void {
     logRoomData.info("session dispose")
+    this._stopHeartbeat()
     this._sessionGeneration += 1
     this._publishLifecycleIgnore = true
     const ws = this._ws
