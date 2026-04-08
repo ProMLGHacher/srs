@@ -1,8 +1,8 @@
 # Комнаты WebRTC на [SRS](https://github.com/ossrs/srs) (SFU)
 
-Публикация — **WHIP**, просмотр — **WHEP**. Сигналинг — **WebSocket** (`/ws`), JSON: `join` (с `nickname`), `state` с массивом **`members`**, `presence` / `peer-presence`, `publishing` / `unpublish`, `peer-publish` / `peer-unpublish`, `peer-join` / `peer-leave`, `ping` / `pong`.
+Публикация — **WHIP**, просмотр — **WHEP**. Сигналинг — **WebSocket** (`/api/ws`), JSON: `join` (с `nickname`), `state` с массивом **`members`**, `presence` / `peer-presence`, `publishing` / `unpublish`, `peer-publish` / `peer-unpublish`, `peer-join` / `peer-leave`, `ping` / `pong`.
 
-Приложение: **`backend/`** (Go) — HTTP API, прокси RTC, статика SPA, WebSocket-хаб.
+Приложение: **`backend/`** (Go) — HTTP API и WebSocket-хаб. Входной HTTP-трафик проходит через отдельный **nginx**: `/` (SPA), `/api` (backend), `/srs` (SRS API/RTC).
 
 ## Docker (всё сразу)
 
@@ -10,11 +10,11 @@
 docker compose up --build -d
 ```
 
-Откройте **http://localhost:3080** или с телефона `http://192.168.x.x:3080` (`APP_HOST_PORT` по умолчанию 3080). Образ собирается из корневого **`Dockerfile`**: сборка `front_app` → встраивание `dist` в Go-бинарник.
+Откройте **http://localhost:3080** или с телефона `http://192.168.x.x:3080` (`APP_HOST_PORT` по умолчанию 3080). Образ собирается из корневого **`Dockerfile`**: `front_app` собирается в `dist`, который отдаёт контейнер `nginx`.
 
 ### Доступ по HTTPS / с телефона (кратко)
 
-SPA рассчитана на **относительные** URL (`/api`, `/ws`) — удобно за обратным прокси или туннелем ([ngrok](https://ngrok.com/) и т.п.). Для **телефона в той же Wi‑Fi**, что и хост с Docker, задайте **`SRS_CANDIDATE_IP=<LAN-IP машины>`** — иначе ICE к **UDP 8000** не сойдётся.
+SPA рассчитана на **относительные** URL (`/api`, `/api/ws`, `/srs`) — удобно за обратным прокси или туннелем ([ngrok](https://ngrok.com/) и т.п.). Для **телефона в той же Wi‑Fi**, что и хост с Docker, задайте **`SRS_CANDIDATE_IP=<LAN-IP машины>`** — иначе ICE к **UDP 8000** не сойдётся.
 
 **Ограничение:** HTTP(S)-туннель не заменяет **UDP** для медиа. С **мобильного интернета** без **TURN** звонок обычно не заработает.
 
@@ -22,7 +22,7 @@ SPA рассчитана на **относительные** URL (`/api`, `/ws`)
 
 **502** при открытии URL обычно не из‑за «закрытых портов»: ответ уже пришёл с сервера. Если страница **не открывается вообще** (таймаут), проверьте **Системные настройки → Сеть → Брандмауэр**: разрешите входящие для **Docker** (или временно отключите брандмауэр для проверки). Порты **3080** (HTTP приложения), **1985** (API SRS), **8000/udp** (WebRTC) должны быть проброшены compose’ом на хост.
 
-Сервисы: **srs** (1985, 8080, **8000/udp**) и **app** (образ из `Dockerfile`, внутри контейнера порт **3001**). См. [WebRTC | SRS](https://ossrs.io/lts/en-us/docs/v5/doc/webrtc).
+Сервисы: **nginx** (внешний HTTP), **app** (внутри сети: порт **3001**) и **srs** (внутри сети HTTP API, наружу проброшен **8000/udp** для WebRTC media). См. [WebRTC | SRS](https://ossrs.io/lts/en-us/docs/v5/doc/webrtc).
 
 **ICE / `SRS_CANDIDATE_IP`** и **`SRS_EIP`** в compose совпадают по смыслу: IP, который браузер реально может достичь по UDP 8000 (часто `127.0.0.1` или LAN‑IP хоста).
 
@@ -46,7 +46,7 @@ go run ./cmd/server
 
 Переменные: `PORT`, `SRS_HTTP`, `SRS_EIP` (см. `backend/internal/config/config.go`).
 
-Терминал 3 — фронт (Vite проксирует `/api` и `/ws` на **http://127.0.0.1:3001**):
+Терминал 3 — фронт (Vite проксирует `/api` и `/api/ws` на **http://127.0.0.1:3001**, а `/srs` на **http://127.0.0.1:1985**):
 
 ```bash
 cd front_app
@@ -54,18 +54,19 @@ npm install
 npm run dev
 ```
 
-Для отдельного URL API при сборке фронта задайте `VITE_SIGNAL_URL` и при необходимости `VITE_SIGNAL_WS` (полный URL `wss://.../ws`).
+Для отдельного URL API при сборке фронта задайте `VITE_SIGNAL_URL` и при необходимости `VITE_SIGNAL_WS` (полный URL `wss://.../api/ws`).
 
 ### Деплой за nginx / другим reverse proxy
 
-Маршруты SPA (`/room/<id>` и т.д.) не должны обрабатываться как каталоги на диске. В **nginx** не используйте `try_files $uri $uri/ /index.html` — вариант `$uri/` даёт **301** на путь вроде `/room/` и цикл редиректов. Проксируйте всё на бинарник Go или используйте `try_files $uri /index.html` без `$uri/`. Пример: [`deploy/nginx-spa.example.conf`](deploy/nginx-spa.example.conf).
+Маршруты SPA (`/room/<id>` и т.д.) не должны обрабатываться как каталоги на диске. В **nginx** не используйте `try_files $uri $uri/ /index.html` — вариант `$uri/` даёт **301** на путь вроде `/room/` и цикл редиректов. Используйте `try_files $uri /index.html` без `$uri/`. Текущий конфиг контейнера: [`deploy/nginx.conf`](deploy/nginx.conf), пример с пояснениями: [`deploy/nginx-spa.example.conf`](deploy/nginx-spa.example.conf).
 
 ## Структура репозитория
 
 | Путь | Назначение |
 |------|------------|
-| `Dockerfile` | multi-stage: `front_app` → Go, embed `dist` в бинарник |
-| `docker-compose.yml` | SRS + приложение |
-| `backend/` | Go: WHIP/WHEP, `/ws`, `/api/health`, `/api/rooms`, статика |
+| `Dockerfile` | multi-stage: сборка `front_app`, отдельные runtime-таргеты `app` (Go) и `nginx` |
+| `docker-compose.yml` | `nginx` + `app` + `srs` |
+| `backend/` | Go: `/api/health`, `/api/rooms`, `/api/ws` |
 | `front_app/` | SPA (React, kvt), лобби и комната |
+| `deploy/nginx.conf` | production reverse proxy (`/`, `/api`, `/srs`) |
 | `srs/rtc.conf` | RTC для SRS |

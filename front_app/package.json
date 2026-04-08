@@ -9,6 +9,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@kvatum/ui": "file:../kvatum/packages/ui",
+    "@kvatum/icons": "file:../kvatum/packages/icons",
+    "@kvatum/rtc": "file:../kvatum/packages/rtc",
+    "@kvatum/rtc-react": "file:../kvatum/packages/rtc-react",
     "@kvt/logging": "^0.1.0",
     "@kvt/react": "^0.1.0",
     "@kvt/runtime": "^0.1.1",

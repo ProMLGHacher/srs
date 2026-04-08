@@ -1,6 +1,7 @@
 import { Toast } from "@/app/presentation/ui/Toast"
 import { getStoredDisplayName, setStoredDisplayName } from "@/app/profile/displayName"
 import { loadLobbyMediaDefaults } from "@/app/profile/lobbyMediaPrefs"
+import { Button, Card, Input } from "@kvatum/ui"
 import type { RoomSessionInitOptions } from "../../domain/model/roomSessionInit"
 import { useViewModel, useStateFlow } from "@kvt/react"
 import { type FormEvent, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
@@ -101,23 +102,23 @@ export function RoomPage(_: unknown, VM = RoomViewModel) {
 
   if (!displayName) {
     return (
-      <div className="min-h-screen bg-[var(--kvt-color-surface)] px-4 py-10 text-[var(--kvt-color-on-surface)]">
+      <div className="min-h-screen bg-[#11141d] px-4 py-10 text-[var(--kvatum-on-surface)]">
         <p className="text-sm">
-          <Link to="/" className="text-[var(--kvt-color-primary)] underline">
+          <Link to="/" className="text-[var(--kvatum-primary)] underline">
             ← На главную
           </Link>
         </p>
         <h1 className="mt-4 text-xl font-semibold">Комната {roomId}</h1>
-        <p className="mt-2 text-sm text-[var(--kvt-color-on-surface-variant)]">
+        <p className="mt-2 text-sm text-[var(--kvatum-on-surface-variant)]">
           Введите никнейм — так вас увидят участники. Без редиректа: можно открыть ссылку с любого устройства и сразу указать имя здесь.
         </p>
-        <form className="mt-6 max-w-md space-y-4" onSubmit={confirmNickname}>
+        <Card className="mt-6 max-w-md space-y-4">
+        <form className="space-y-4" onSubmit={confirmNickname}>
           <label htmlFor="room-nick" className="block text-sm font-medium">
             Никнейм
           </label>
-          <input
+          <Input
             id="room-nick"
-            className="w-full rounded-lg border border-white/15 bg-[var(--kvt-color-surface)] px-3 py-2"
             value={nicknameDraft}
             onChange={(e) => setNicknameDraft(e.target.value)}
             placeholder="Как вас видят в эфире"
@@ -125,14 +126,11 @@ export function RoomPage(_: unknown, VM = RoomViewModel) {
             autoComplete="nickname"
             autoFocus
           />
-          <button
-            type="submit"
-            className="rounded-lg bg-[var(--kvt-color-primary)] px-4 py-2 font-medium text-[var(--kvt-color-on-primary)] disabled:opacity-45"
-            disabled={!nicknameDraft.trim()}
-          >
+          <Button type="submit" variant="primary" disabled={!nicknameDraft.trim()}>
             Продолжить
-          </button>
+          </Button>
         </form>
+        </Card>
       </div>
     )
   }
@@ -161,18 +159,20 @@ export function RoomPage(_: unknown, VM = RoomViewModel) {
   const statusLine = roomConnectionStatusLabel(snap)
 
   return (
-    <div className="min-h-screen bg-[var(--kvt-color-surface)] pb-28 text-[var(--kvt-color-on-surface)]">
+    <div className="min-h-screen bg-[#11141d] pb-28 text-[var(--kvatum-on-surface)]">
       <div className="mx-auto max-w-6xl px-4 pt-4">
         <p className="text-sm">
-          <Link to="/" className="text-[var(--kvt-color-primary)] underline">
+          <Link to="/" className="text-[var(--kvatum-primary)] underline">
             ← На главную
           </Link>
         </p>
-        <h1 className="mt-2 text-xl font-semibold">Комната {roomId}</h1>
-        <p className="mt-1 text-sm text-[var(--kvt-color-on-surface-variant)]">{statusLine}</p>
+        <div className="mt-2 rounded-2xl border border-white/10 bg-[#1d2130] p-4">
+          <h1 className="text-2xl font-semibold tracking-tight">Комната {roomId}</h1>
+          <p className="mt-1 text-sm text-[var(--kvatum-on-surface-variant)]">{statusLine}</p>
+        </div>
         {snap.error ? <p className="mt-2 text-sm text-red-300">{snap.error}</p> : null}
 
-        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {sortMembers(snap.members, peerId).map((m) => {
             const isLocal = m.peerId === peerId
             const stream = isLocal ? localStream : vm.getRemoteStream(m.peerId)

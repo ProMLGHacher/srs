@@ -5,18 +5,16 @@ services:
   srs:
     image: ossrs/srs:6
     ports:
-      - "1985:1985"
-      - "8080:8080"
       - "8000:8000/udp"
     environment:
       CANDIDATE: ${SRS_CANDIDATE_IP:-127.0.0.1}
     networks: [srsnet]
 
   app:
-    build: .
+    build:
+      context: .
+      target: app
     restart: unless-stopped
-    ports:
-      - "${APP_HOST_PORT:-3080}:3001"
     depends_on:
       - srs
     environment:
@@ -24,6 +22,18 @@ services:
       SRS_EIP: ${SRS_CANDIDATE_IP:-127.0.0.1}
     dns_opt:
       - "ndots:0"
+    networks: [srsnet]
+
+  nginx:
+    build:
+      context: .
+      target: nginx
+    restart: unless-stopped
+    ports:
+      - "${APP_HOST_PORT:-3080}:80"
+    depends_on:
+      - app
+      - srs
     networks: [srsnet]
 
 networks:

@@ -1,9 +1,9 @@
 import "reflect-metadata"
 import "@kvt/di-autoload"
-import { logApp } from "@/app/logging/kvtAppLog"
+import { logApp } from "./logging/kvtAppLog"
 import ReactDOM from "react-dom/client"
-import { App } from "@/app/presentation/app/view/App"
-import "@/app/presentation/styles/index.css"
+import { App } from "./presentation/app/view/App"
+import "./presentation/styles/index.css"
 
 logApp.info("bootstrap: mounting React root")
 

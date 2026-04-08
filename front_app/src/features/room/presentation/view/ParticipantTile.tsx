@@ -1,4 +1,5 @@
 import type { RoomMember } from "../../domain/model/roomMember"
+import { Badge, Card, Input } from "@kvatum/ui"
 import { useEffect, useRef, useState } from "react"
 
 type ParticipantTileProps = {
@@ -14,9 +15,9 @@ type ParticipantTileProps = {
 
 function MicCamIcons({ micOn, camOn }: { micOn: boolean; camOn: boolean }) {
   return (
-    <div className="absolute right-2 top-2 flex gap-1 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] text-white">
-      <span title="Микрофон">{micOn ? "🎤" : "🔇"}</span>
-      <span title="Камера">{camOn ? "📷" : "📷̸"}</span>
+    <div className="absolute right-3 top-3 flex items-center gap-1">
+      <Badge tone={micOn ? "success" : "danger"}>{micOn ? "MIC" : "MUTED"}</Badge>
+      <Badge tone={camOn ? "primary" : "neutral"}>{camOn ? "CAM" : "NO CAM"}</Badge>
     </div>
   )
 }
@@ -59,8 +60,8 @@ export function ParticipantTile({
   }, [menuOpen])
 
   return (
-    <div
-      className="relative aspect-video overflow-hidden rounded-xl border border-white/10 bg-zinc-900"
+    <Card
+      className="relative aspect-video overflow-hidden border-white/15 p-0"
       onContextMenu={(e) => {
         if (isLocal || !onVolumeChange) return
         e.preventDefault()
@@ -74,21 +75,21 @@ export function ParticipantTile({
       {showVideo && stream ? (
         <video
           ref={videoRef}
-          className={`h-full w-full object-cover ${isLocal ? "[transform:scaleX(-1)]" : ""}`}
+          className={`h-full w-full object-cover ${isLocal ? "transform-[scaleX(-1)]" : ""}`}
           autoPlay
           playsInline
           muted={isLocal}
         />
       ) : (
-        <div className="flex h-full items-center justify-center px-2">
-          <span className="text-center text-xl font-bold uppercase tracking-wide text-white/90 md:text-2xl">
+        <div className="flex h-full items-center justify-center bg-[radial-gradient(circle_at_30%_20%,#2f4a70_0%,#1a2230_45%,#131922_100%)] px-2">
+          <span className="text-center text-xl font-bold uppercase tracking-[0.14em] text-white/90 md:text-2xl">
             {member.nickname || member.peerId.slice(0, 8)}
           </span>
         </div>
       )}
 
       {showVideo && stream ? (
-        <span className="absolute bottom-2 left-2 max-w-[85%] truncate rounded bg-black/60 px-2 py-1 text-xs text-white">
+        <span className="absolute bottom-3 left-3 max-w-[85%] truncate rounded-full bg-black/50 px-3 py-1 text-xs text-white backdrop-blur">
           {member.nickname}
           {isLocal ? " (вы)" : ""}
         </span>
@@ -99,19 +100,20 @@ export function ParticipantTile({
       {menuOpen && !isLocal && onVolumeChange ? (
         <div
           ref={menuRef}
-          className="absolute bottom-12 right-2 z-10 w-44 rounded-lg border border-white/20 bg-zinc-950 p-3 shadow-xl"
+          className="absolute bottom-14 right-3 z-10 w-48 rounded-2xl border border-white/20 bg-[#111722]/95 p-3 shadow-2xl backdrop-blur"
           onClick={(e) => e.stopPropagation()}
         >
-          <p className="mb-2 text-xs text-white/70">Громкость</p>
-          <input
+          <p className="mb-2 text-xs tracking-wide text-white/70">ГРОМКОСТЬ</p>
+          <Input
             type="range"
             min={0}
             max={100}
+            className="h-2 border-0 bg-transparent p-0"
             value={Math.round(remoteVolume * 100)}
             onChange={(e) => onVolumeChange(member.peerId, Number(e.target.value) / 100)}
           />
         </div>
       ) : null}
-    </div>
+    </Card>
   )
 }

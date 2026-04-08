@@ -1,147 +1,108 @@
-import { getStoredDisplayName, setStoredDisplayName } from "@/app/profile/displayName"
-import { loadLobbyMediaDefaults, saveLobbyMediaDefaults } from "@/app/profile/lobbyMediaPrefs"
+import { Button, Card, Checkbox, Input, Stack } from "@kvatum/ui"
+import { useViewModel, useStateFlow } from "@kvt/react"
 import { useState } from "react"
 import { useNavigate } from "react-router"
+import { LobbyViewModel } from "../view_model/LobbyViewModel"
 import { MediaSettingsModal } from "./MediaSettingsModal"
 
-function apiOrigin(): string {
-  return import.meta.env.VITE_SIGNAL_URL || ""
-}
-
-export function LobbyPage() {
+export function LobbyPage(_: unknown, VM = LobbyViewModel) {
   const navigate = useNavigate()
-  const [nickname, setNickname] = useState(() => getStoredDisplayName())
-  const [joinCode, setJoinCode] = useState("")
+  const vm = useViewModel(VM)
+  const snap = useStateFlow(vm.state)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
-  const [lobbyMic, setLobbyMic] = useState(() => loadLobbyMediaDefaults().micOn)
-  const [lobbyCam, setLobbyCam] = useState(() => loadLobbyMediaDefaults().camOn)
 
-  const trimmedNick = nickname.trim()
+  const trimmedNick = snap.nickname.trim()
   const canAct = trimmedNick.length > 0
 
-  async function createRoom(): Promise<void> {
+  async function onCreateRoom(): Promise<void> {
     if (!canAct) return
-    setErr(null)
-    setBusy(true)
-    try {
-      setStoredDisplayName(trimmedNick)
-      saveLobbyMediaDefaults(lobbyMic, lobbyCam)
-      const res = await fetch(`${apiOrigin()}/api/rooms`, { method: "POST" })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = (await res.json()) as { roomId?: string }
-      if (!data.roomId) throw new Error("нет roomId")
-      navigate(`/room/${encodeURIComponent(data.roomId)}`, { state: { skipPreJoin: true } })
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
+    const roomId = await vm.createRoom()
+    if (roomId) {
+      navigate(`/room/${encodeURIComponent(roomId)}`, { state: { skipPreJoin: true } })
     }
   }
 
-  function joinByCode(): void {
+  function onJoinByCode(): void {
     if (!canAct) return
-    const raw = joinCode.trim()
-    if (!raw) {
-      setErr("Введите код комнаты")
-      return
+    const roomId = vm.joinByCode()
+    if (roomId) {
+      navigate(`/room/${encodeURIComponent(roomId)}`, { state: { skipPreJoin: false } })
     }
-    setErr(null)
-    setStoredDisplayName(trimmedNick)
-    const code = raw.replace(/^.*\/room\//, "").split("/")[0].split("?")[0]
-    saveLobbyMediaDefaults(lobbyMic, lobbyCam)
-    navigate(`/room/${encodeURIComponent(code)}`, { state: { skipPreJoin: false } })
   }
 
   return (
-    <div className="mx-auto flex min-h-[70vh] max-w-lg flex-col justify-center px-4 py-12 text-[var(--kvt-color-on-surface)]">
-      <h1 className="text-center text-2xl font-semibold">Видеоконференции</h1>
-      <p className="mt-2 text-center text-sm text-[var(--kvt-color-on-surface-variant)]">
-        Укажите никнейм — без него вход недоступен.
-      </p>
+    <div className="mx-auto grid min-h-[calc(100vh-72px)] max-w-6xl grid-cols-1 items-center gap-8 px-4 py-10 lg:grid-cols-[1.2fr_1fr]">
+      <section className="rounded-3xl border border-white/10 bg-linear-to-br from-[#202236] to-[#151826] p-8 shadow-2xl">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#aab3c5]">kvatum live</p>
+        <h1 className="mt-3 text-4xl font-bold leading-tight text-white">Создавайте комнаты как в Discord</h1>
+        <p className="mt-4 max-w-xl text-sm text-[#b8c0d4]">
+          Быстрый вход, приватная ссылка, живые участники и управление медиа в одном плотном интерфейсе.
+        </p>
+      </section>
 
-      <div className="mt-8 space-y-4 rounded-xl border border-white/10 bg-white/5 p-6">
-        <div>
-          <label htmlFor="nick" className="mb-1 block text-sm font-medium">
-            Никнейм
-          </label>
-          <input
-            id="nick"
-            className="w-full rounded-lg border border-white/15 bg-[var(--kvt-color-surface)] px-3 py-2"
-            value={nickname}
-            onChange={(e) => setNickname(e.target.value)}
-            placeholder="Как вас видят в эфире"
-            maxLength={64}
-          />
-        </div>
-
-        <div className="flex flex-wrap gap-4 text-sm">
-          <label className="flex cursor-pointer items-center gap-2">
-            <input
-              type="checkbox"
-              checked={lobbyMic}
-              onChange={(e) => {
-                setLobbyMic(e.target.checked)
-                saveLobbyMediaDefaults(e.target.checked, lobbyCam)
-              }}
+      <Card className="border-white/10 bg-[#1f2330]">
+        <Stack gap="md">
+          <div>
+            <label htmlFor="nick" className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[#a8b0c2]">
+              Никнейм
+            </label>
+            <Input
+              id="nick"
+              value={snap.nickname}
+              onChange={(e) => vm.setNickname(e.target.value)}
+              placeholder="Как вас видят в эфире"
+              maxLength={64}
             />
-            Микрофон при входе
-          </label>
-          <label className="flex cursor-pointer items-center gap-2">
-            <input
-              type="checkbox"
-              checked={lobbyCam}
-              onChange={(e) => {
-                setLobbyCam(e.target.checked)
-                saveLobbyMediaDefaults(lobbyMic, e.target.checked)
-              }}
+          </div>
+
+          <div className="flex flex-wrap gap-4 text-sm text-[#d3d8e4]">
+            <label className="flex cursor-pointer items-center gap-2">
+              <Checkbox
+                checked={snap.lobbyMic}
+                onChange={(e) => {
+                  vm.setLobbyMic(e.target.checked)
+                }}
+              />
+              Микрофон при входе
+            </label>
+            <label className="flex cursor-pointer items-center gap-2">
+              <Checkbox
+                checked={snap.lobbyCam}
+                onChange={(e) => {
+                  vm.setLobbyCam(e.target.checked)
+                }}
+              />
+              Камера при входе
+            </label>
+          </div>
+
+          <Button variant="primary" fullWidth size="lg" disabled={!canAct || snap.busy} onClick={() => void onCreateRoom()}>
+            Создать комнату
+          </Button>
+
+          <div className="border-t border-white/10 pt-4">
+            <label htmlFor="code" className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[#a8b0c2]">
+              Код или ссылка
+            </label>
+            <Input
+              id="code"
+              value={snap.joinCode}
+              onChange={(e) => vm.setJoinCode(e.target.value)}
+              placeholder="например abcdef12 или полная ссылка"
+              onKeyDown={(e) => e.key === "Enter" && onJoinByCode()}
             />
-            Камера при входе
-          </label>
-        </div>
+            <Button className="mt-3" fullWidth disabled={!canAct} onClick={onJoinByCode}>
+              Присоединиться
+            </Button>
+          </div>
 
-        <button
-          type="button"
-          className="w-full rounded-lg bg-[var(--kvt-color-primary)] py-3 font-medium text-[var(--kvt-color-on-primary)] disabled:opacity-45"
-          disabled={!canAct || busy}
-          onClick={() => void createRoom()}
-        >
-          Создать комнату
-        </button>
+          <Button variant="secondary" fullWidth onClick={() => setSettingsOpen(true)}>
+            Настройки камеры и микрофона
+          </Button>
 
-        <div className="border-t border-white/10 pt-4">
-          <label htmlFor="code" className="mb-1 block text-sm font-medium">
-            Код или ссылка
-          </label>
-          <input
-            id="code"
-            className="w-full rounded-lg border border-white/15 bg-[var(--kvt-color-surface)] px-3 py-2"
-            value={joinCode}
-            onChange={(e) => setJoinCode(e.target.value)}
-            placeholder="например abcdef12 или полная ссылка"
-            onKeyDown={(e) => e.key === "Enter" && joinByCode()}
-          />
-          <button
-            type="button"
-            className="mt-3 w-full rounded-lg border border-white/15 py-3 font-medium disabled:opacity-45"
-            disabled={!canAct}
-            onClick={joinByCode}
-          >
-            Присоединиться
-          </button>
-        </div>
-
-        <button
-          type="button"
-          className="w-full rounded-lg border border-white/10 py-2 text-sm text-[var(--kvt-color-on-surface-variant)]"
-          onClick={() => setSettingsOpen(true)}
-        >
-          Настройки камеры и микрофона
-        </button>
-
-        {err ? <p className="text-center text-sm text-red-300">{err}</p> : null}
-      </div>
+          {snap.err ? <p className="text-center text-sm text-red-300">{snap.err}</p> : null}
+        </Stack>
+      </Card>
 
       <MediaSettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>

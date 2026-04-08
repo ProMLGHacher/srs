@@ -1,17 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
-	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"path"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -19,13 +14,12 @@ import (
 	"srs/backend/internal/api"
 	"srs/backend/internal/config"
 	"srs/backend/internal/srs"
-	"srs/backend/internal/static"
 	wshub "srs/backend/internal/ws"
 
 	"github.com/gorilla/websocket"
 )
 
-const maxSDPBytes = 256 * 1024
+const maxMessageBytes = 256 * 1024
 
 func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -38,74 +32,6 @@ func cors(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-// spaHandler отдаёт статику из embed; для маршрутов SPA (/room/..., …) — тело index.html без http.FileServer.
-// FileServer при подстановке пути давал 301: у входящего запроса оставался RequestURI=/room/id.
-func spaHandler(fsys fs.FS) http.Handler {
-	indexHTML, err := fs.ReadFile(fsys, "index.html")
-	if err != nil {
-		log.Fatal("static: index.html: ", err)
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		p := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
-		if p == "" || p == "." {
-			p = "index.html"
-		}
-		if !isEmbeddedStaticFile(p) {
-			serveIndexHTML(w, r, indexHTML)
-			return
-		}
-		f, err := fsys.Open(p)
-		if err != nil {
-			serveIndexHTML(w, r, indexHTML)
-			return
-		}
-		st, err := f.Stat()
-		if err != nil || st.IsDir() {
-			_ = f.Close()
-			serveIndexHTML(w, r, indexHTML)
-			return
-		}
-		body, err := io.ReadAll(f)
-		_ = f.Close()
-		if err != nil {
-			serveIndexHTML(w, r, indexHTML)
-			return
-		}
-		http.ServeContent(w, r, p, st.ModTime(), bytes.NewReader(body))
-	})
-}
-
-func serveIndexHTML(w http.ResponseWriter, r *http.Request, indexHTML []byte) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	if r.Method == http.MethodHead {
-		return
-	}
-	_, _ = w.Write(indexHTML)
-}
-
-// Только реальные файлы из dist: корень (index, favicon), assets/*, типичные расширения. Не /room/...
-func isEmbeddedStaticFile(p string) bool {
-	if p == "index.html" || p == "favicon.ico" || p == "robots.txt" {
-		return true
-	}
-	if strings.HasPrefix(p, "assets/") {
-		return true
-	}
-	ext := strings.ToLower(filepath.Ext(p))
-	switch ext {
-	case ".js", ".css", ".map", ".ico", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp",
-		".woff", ".woff2", ".ttf", ".eot", ".json", ".webmanifest":
-		return true
-	default:
-		return false
-	}
 }
 
 func main() {
@@ -125,10 +51,6 @@ func main() {
 	}
 
 	hub := wshub.NewHub()
-	fsys, err := static.FS()
-	if err != nil {
-		log.Fatal(err)
-	}
 
 	upgrader := websocket.Upgrader{
 		ReadBufferSize:  1024,
@@ -154,37 +76,7 @@ func main() {
 
 	mux.HandleFunc("/api/rooms", api.NewRoomHandler())
 
-	proxyRTC := func(kind string) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodPost {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-				return
-			}
-			peer := r.URL.Query().Get("peer")
-			if peer == "" {
-				http.Error(w, "query peer required", http.StatusBadRequest)
-				return
-			}
-			body, err := io.ReadAll(io.LimitReader(r.Body, maxSDPBytes))
-			if err != nil {
-				http.Error(w, "read body", http.StatusBadRequest)
-				return
-			}
-			code, text, err := srs.ProxySDP(fetchOrigin, kind, peer, cfg.SRSEIP, body)
-			if err != nil {
-				log.Println(kind, "proxy", err)
-				http.Error(w, "fetch failed: "+err.Error(), http.StatusBadGateway)
-				return
-			}
-			w.Header().Set("Content-Type", "application/sdp")
-			w.WriteHeader(code)
-			_, _ = w.Write([]byte(text))
-		}
-	}
-	mux.HandleFunc("/api/rtc/whip", proxyRTC("whip"))
-	mux.HandleFunc("/api/rtc/whep", proxyRTC("whep"))
-
-	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/ws", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -199,7 +91,7 @@ func main() {
 			hub.RemoveConn(client)
 			_ = conn.Close()
 		}()
-		conn.SetReadLimit(maxSDPBytes)
+		conn.SetReadLimit(maxMessageBytes)
 		for {
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
@@ -208,8 +100,6 @@ func main() {
 			hub.HandleMessage(client, msg)
 		}
 	})
-
-	mux.Handle("/", spaHandler(fsys))
 
 	handler := cors(mux)
 	srv := &http.Server{

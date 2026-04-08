@@ -1,0 +1,16 @@
+{
+  "name": "@kvatum/icons",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.tsx",
+  "types": "./src/index.tsx",
+  "exports": {
+    ".": "./src/index.tsx"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

@@ -1,0 +1,89 @@
+:root {
+  --kvatum-primary: #5865f2;
+  --kvatum-on-primary: #ffffff;
+  --kvatum-primary-container: #4752c4;
+  --kvatum-on-primary-container: #ffffff;
+
+  --kvatum-secondary: #4f545c;
+  --kvatum-on-secondary: #ffffff;
+  --kvatum-secondary-container: #2b2d31;
+  --kvatum-on-secondary-container: #dbdee1;
+
+  --kvatum-error: #f23f43;
+  --kvatum-on-error: #ffffff;
+  --kvatum-error-container: #3c1d22;
+  --kvatum-on-error-container: #ffb8bf;
+
+  --kvatum-bg: #11141d;
+  --kvatum-surface: #1e1f22;
+  --kvatum-surface-container-low: #1a1b1e;
+  --kvatum-surface-container: #23262d;
+  --kvatum-surface-container-high: #2b2f36;
+  --kvatum-on-surface: #f2f3f5;
+  --kvatum-on-surface-variant: #b5bac1;
+  --kvatum-outline: #3b3f46;
+
+  --kvatum-success: #2eb67d;
+  --kvatum-warning: #f0b429;
+
+  --kvatum-state-hover: rgba(255, 255, 255, 0.06);
+  --kvatum-state-pressed: rgba(255, 255, 255, 0.12);
+  --kvatum-focus-ring: rgba(88, 101, 242, 0.55);
+
+  --kvatum-elevation-1: 0 1px 2px rgba(0, 0, 0, 0.28), 0 1px 3px rgba(0, 0, 0, 0.22);
+  --kvatum-elevation-2: 0 2px 6px rgba(0, 0, 0, 0.32), 0 2px 8px rgba(0, 0, 0, 0.24);
+  --kvatum-elevation-3: 0 6px 16px rgba(0, 0, 0, 0.36), 0 3px 8px rgba(0, 0, 0, 0.24);
+}
+
+.kv-focus-ring:focus-visible {
+  outline: 2px solid var(--kvatum-focus-ring);
+  outline-offset: 2px;
+}
+
+.kv-input-like {
+  border-radius: 8px;
+  border: 1px solid #000;
+  background: #1a1d24;
+  color: var(--kvatum-on-surface);
+  transition: border-color 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
+}
+
+.kv-input-like:hover {
+  background: #1f222a;
+}
+
+.kv-input-like:focus {
+  border-color: var(--kvatum-primary);
+  box-shadow: 0 0 0 3px rgba(168, 199, 255, 0.18);
+}
+
+.kv-card {
+  border-radius: 12px;
+  border: 1px solid #16181d;
+  background: #23262d;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.25);
+}
+
+.kv-modal-surface {
+  border-radius: 14px;
+  border: 1px solid #16181d;
+  background: #2b2d31;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+}
+
+.kv-btn {
+  border-radius: 8px;
+  border-width: 1px;
+  border-style: solid;
+  font-weight: 600;
+  transition: transform 120ms ease, background-color 160ms ease, color 160ms ease, border-color 160ms ease;
+  box-shadow: none;
+}
+
+.kv-btn:hover {
+  filter: brightness(1.04);
+}
+
+.kv-btn:active {
+  transform: translateY(0);
+}

@@ -1,0 +1,21 @@
+{
+  "name": "kvatum",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Kvatum shared packages: design system and frontend RTC SDK",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build -ws --if-present",
+    "typecheck": "npm run typecheck -ws --if-present"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "typescript": "^5.6.2"
+  }
+}

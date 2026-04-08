@@ -2,19 +2,22 @@ import { logRoomData } from "@/app/logging/kvtAppLog"
 import { buildAudioConstraints, buildVideoConstraints } from "@/app/media/mediaPrefs"
 import { loadLobbyMediaDefaults } from "@/app/profile/lobbyMediaPrefs"
 import { MutableStateFlow } from "@kvt/runtime"
+import {
+  createMediaMutex,
+  sanitizeWhepAnswerForChrome,
+  sdpOfferHasVideoMLine,
+  sdpOfferIncludesH264Video,
+  waitIceGathering,
+} from "@kvatum/rtc"
 import type { RoomMember } from "../../domain/model/roomMember"
 import type { SignalingInbound } from "../../domain/model/signalingInbound"
 import type { RoomPageSnapshot } from "../../domain/model/roomPageSnapshot"
 import type { RtcPeerDiagnostics, WsReadyStateLabel } from "../../domain/model/roomDiagnostics"
-import { sdpOfferHasVideoMLine, sdpOfferIncludesH264Video } from "../../domain/sdp/videoCodecOrder"
 import type { RoomSessionInitOptions } from "../../domain/model/roomSessionInit"
 import { RoomSessionRepository } from "../../domain/repository/RoomSessionRepository"
 import { applyH264VideoOnly, h264VideoCodecPreferences } from "../webrtc/webrtcCodecPreferences"
-import { waitIceGathering } from "../webrtc/iceGathering"
 import { stopTrackSafe } from "../webrtc/blackVideoTrack"
-import { createMediaMutex } from "../webrtc/mediaMutex"
 import { copyLocalSdpToClipboard } from "../webrtc/sdpClipboard"
-import { sanitizeWhepAnswerForChrome } from "../webrtc/sanitizeWhepAnswerSdp"
 
 const ICE: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }]
 const WS_HEARTBEAT_MS = 25_000
@@ -24,7 +27,7 @@ function signalingWsUrl(): string {
   if (explicit) return explicit
   const u = new URL(window.location.href)
   u.protocol = u.protocol === "https:" ? "wss:" : "ws:"
-  u.pathname = "/ws"
+  u.pathname = "/api/ws"
   u.search = ""
   u.hash = ""
   return u.toString()
@@ -156,9 +159,18 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
     w.send(JSON.stringify({ t: "presence", micOn: localMicOn, camOn: localCamOn }))
   }
 
-  private async _postSdp(path: string, qPeer: string, sdp: string): Promise<string> {
-    const url = `${this._base}${path}?peer=${encodeURIComponent(qPeer)}`
-    logRoomData.debug("POST SDP", { path, peer: qPeer.slice(0, 8), base: this._base || "(same-origin)" })
+  private _srsEip(): string {
+    return import.meta.env.VITE_SRS_EIP || window.location.hostname || "127.0.0.1"
+  }
+
+  private async _postSdp(path: string, streamId: string, sdp: string): Promise<string> {
+    const query = new URLSearchParams({
+      app: "live",
+      stream: streamId,
+      eip: this._srsEip(),
+    })
+    const url = `${this._base}${path}?${query.toString()}`
+    logRoomData.debug("POST SDP", { path, stream: streamId.slice(0, 8), base: this._base || "(same-origin)" })
     const r = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/sdp" },
@@ -274,7 +286,7 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
     }
 
     await copyLocalSdpToClipboard(localSdp, clipboardLabel)
-    const answerSdp = await this._postSdp("/api/rtc/whip", this._peerId, localSdp)
+    const answerSdp = await this._postSdp("/srs/rtc/v1/whip/", this._peerId, localSdp)
     if (pubGen !== this._sessionGeneration) return
     await pc.setRemoteDescription({ type: "answer", sdp: answerSdp })
   }
@@ -450,7 +462,7 @@ export class RoomSessionRepositoryImpl extends RoomSessionRepository {
         await pc.setLocalDescription(offer)
         await waitIceGathering(pc)
         void copyLocalSdpToClipboard(pc.localDescription?.sdp, `WHEP → ${remotePeer.slice(0, 8)}…`)
-        const rawAnswer = await this._postSdp("/api/rtc/whep", remotePeer, pc.localDescription!.sdp)
+        const rawAnswer = await this._postSdp("/srs/rtc/v1/whep/", remotePeer, pc.localDescription!.sdp)
         const answerSdp = sanitizeWhepAnswerForChrome(rawAnswer)
         if (answerSdp !== rawAnswer) {
           logRoomData.warn("WHEP answer SDP sanitized (multi-ssrc / Unified Plan)", { remote: remotePeer.slice(0, 8) })
