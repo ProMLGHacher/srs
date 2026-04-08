@@ -3,6 +3,7 @@ WORKDIR /build/front_app
 COPY kvatum /build/kvatum
 COPY front_app/package.json front_app/package-lock.json ./
 RUN npm ci
+RUN ln -s /build/front_app/node_modules /build/node_modules
 COPY front_app/ /build/front_app/
 RUN npm run build
 
