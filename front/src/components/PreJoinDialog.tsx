@@ -40,7 +40,10 @@ export function PreJoinDialog({ open, onOpenChange, roomId, onJoin }: PreJoinDia
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const micOnRef = useRef(micOn)
-  micOnRef.current = micOn
+
+  useEffect(() => {
+    micOnRef.current = micOn
+  }, [micOn])
 
   useEffect(() => {
     if (!open) return
@@ -72,7 +75,9 @@ export function PreJoinDialog({ open, onOpenChange, roomId, onJoin }: PreJoinDia
       alive = false
       if (!transferredRef.current) stopTracks(streamRef.current)
       streamRef.current = null
+      /* eslint-disable react-hooks/exhaustive-deps -- сбрасываем превью по ref на момент unmount */
       if (videoRef.current) videoRef.current.srcObject = null
+      /* eslint-enable react-hooks/exhaustive-deps */
     }
   }, [open, camOn])
 

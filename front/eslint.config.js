@@ -19,5 +19,12 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      /**
+       * Срабатывает на легитимные эффекты (WebSocket, синхронизация initialStream с ref):
+       * отложенный setState здесь не улучшает модель, только шумит.
+       */
+      'react-hooks/set-state-in-effect': 'off',
+    },
   },
 ])

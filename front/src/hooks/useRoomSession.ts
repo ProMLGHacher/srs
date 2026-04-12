@@ -34,16 +34,10 @@ export type UseRoomSessionOpts = {
 }
 
 export function useRoomSession(opts: UseRoomSessionOpts) {
-  const peerIdRef = useRef(crypto.randomUUID())
+  const [peerId] = useState(() => crypto.randomUUID())
   const [members, setMembers] = useState<RoomMember[]>([])
   const [localStream, setLocalStream] = useState<MediaStream | null>(opts.initialStream)
 
-  useEffect(() => {
-    if (opts.initialStream) {
-      localStreamRef.current = opts.initialStream
-      setLocalStream(opts.initialStream)
-    }
-  }, [opts.initialStream])
   const [localMicOn, setLocalMicOn] = useState(opts.startMicOn)
   const [localCamOn, setLocalCamOn] = useState(opts.startCamOn)
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({})
@@ -67,9 +61,17 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
   const micRef = useRef(opts.startMicOn)
   const camRef = useRef(opts.startCamOn)
 
+  const commitLocalStream = useCallback((next: MediaStream | null) => {
+    localStreamRef.current = next
+    setLocalStream(next)
+  }, [])
+
   useEffect(() => {
-    localStreamRef.current = localStream
-  }, [localStream])
+    if (opts.initialStream) {
+      commitLocalStream(opts.initialStream)
+    }
+  }, [opts.initialStream, commitLocalStream])
+
   useEffect(() => {
     micRef.current = localMicOn
   }, [localMicOn])
@@ -110,7 +112,7 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
 
   const subscribePeer = useCallback(
     async (remotePeerId: string, gen: number, wantVideo = true) => {
-      if (remotePeerId === peerIdRef.current) return
+      if (remotePeerId === peerId) return
       if (subsRef.current.has(remotePeerId)) return
       const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
       subsRef.current.set(remotePeerId, pc)
@@ -156,7 +158,7 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
         patchPeerSubscribeStatus(remotePeerId, `Ошибка: ${msg.slice(0, 72)}`)
       }
     },
-    [cleanupSub, patchPeerSubscribeStatus],
+    [cleanupSub, patchPeerSubscribeStatus, peerId],
   )
 
   const stopPublishing = useCallback(() => {
@@ -253,7 +255,7 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
         releaseIfOurPc(pc)
         return
       }
-      const raw = await postSdp("/srs/rtc/v1/whip/", peerIdRef.current, pc.localDescription!.sdp)
+      const raw = await postSdp("/srs/rtc/v1/whip/", peerId, pc.localDescription!.sdp)
       if (superseded() || wsSessionGen !== sessionGen.current) {
         releaseIfOurPc(pc)
         return
@@ -273,7 +275,7 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
       const msg = e instanceof Error ? e.message : String(e)
       setPublishLabel(`Ошибка: ${msg.slice(0, 120)}`)
     }
-  }, [])
+  }, [peerId])
 
   /** SRS: после audio-only нельзя дотянуть видео тем же WHIP — полный стоп, пауза, новый publish. */
   const restartPublishing = useCallback(async () => {
@@ -286,7 +288,7 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
 
   const subscribeAllPublishers = useCallback(
     (list: RoomMember[], gen: number) => {
-      const self = peerIdRef.current
+      const self = peerId
       let n = 0
       for (const m of list) {
         if (m.peerId !== self && m.publishing) {
@@ -296,7 +298,7 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
       }
       setSubscribeLabel(n ? `Подписок: ${n}` : "Нет удалённых эфиров")
     },
-    [subscribePeer],
+    [peerId, subscribePeer],
   )
 
   const handleInbound = useCallback(
@@ -333,7 +335,7 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
         case "peer-publish": {
           setMembers((prev) => {
             const next = prev.map((m) => (m.peerId === msg.peerId ? { ...m, publishing: true } : m))
-            if (msg.peerId !== peerIdRef.current) {
+            if (msg.peerId !== peerId) {
               const remote = next.find((m) => m.peerId === msg.peerId)
               const wantVideo = remote?.camOn ?? true
               queueMicrotask(() => void subscribePeer(msg.peerId, gen, wantVideo))
@@ -361,11 +363,13 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
           break
       }
     },
-    [cleanupSub, startPublishing, subscribeAllPublishers, subscribePeer],
+    [cleanupSub, peerId, startPublishing, subscribeAllPublishers, subscribePeer],
   )
 
   const inboundRef = useRef(handleInbound)
-  inboundRef.current = handleInbound
+  useEffect(() => {
+    inboundRef.current = handleInbound
+  }, [handleInbound])
 
   useEffect(() => {
     const gen = ++sessionGen.current
@@ -381,7 +385,7 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
         JSON.stringify({
           t: "join",
           roomId: opts.roomId,
-          peerId: peerIdRef.current,
+          peerId,
           nickname: opts.nickname,
         }),
       )
@@ -415,6 +419,8 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
     }
 
     return () => {
+      /* На размонтировании нужны актуальные sessionGen/subs, а не снимок на открытии эффекта. */
+      /* eslint-disable react-hooks/exhaustive-deps */
       sessionGen.current++
       if (heartbeatRef.current) {
         clearInterval(heartbeatRef.current)
@@ -425,11 +431,12 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
       stopPublishing()
       for (const id of [...subsRef.current.keys()]) cleanupSub(id)
       setPeerSubscribeStatus({})
-      localStreamRef.current?.getTracks().forEach(stopTrack)
-      localStreamRef.current = null
-      setLocalStream(null)
+      const toStop = localStreamRef.current
+      toStop?.getTracks().forEach(stopTrack)
+      commitLocalStream(null)
+      /* eslint-enable react-hooks/exhaustive-deps */
     }
-  }, [opts.roomId, opts.nickname, cleanupSub, stopPublishing])
+  }, [opts.roomId, opts.nickname, peerId, cleanupSub, stopPublishing, commitLocalStream])
 
   const sendPresence = useCallback(() => {
     const ws = wsRef.current
@@ -477,10 +484,10 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
       }
     }
 
-    setLocalStream(stream)
+    commitLocalStream(stream)
     sendPresence()
     if (joinedRef.current) await restartPublishing()
-  }, [restartPublishing, sendPresence])
+  }, [commitLocalStream, restartPublishing, sendPresence])
 
   const leave = useCallback(() => {
     sessionGen.current++
@@ -493,13 +500,13 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
     stopPublishing()
     for (const id of [...subsRef.current.keys()]) cleanupSub(id)
     setPeerSubscribeStatus({})
-    localStreamRef.current?.getTracks().forEach(stopTrack)
-    localStreamRef.current = null
-    setLocalStream(null)
-  }, [cleanupSub, stopPublishing])
+    const toStop = localStreamRef.current
+    toStop?.getTracks().forEach(stopTrack)
+    commitLocalStream(null)
+  }, [cleanupSub, commitLocalStream, stopPublishing])
 
   return {
-    peerId: peerIdRef.current,
+    peerId,
     members,
     localStream,
     remoteStreams,
