@@ -1,0 +1,45 @@
+# Голосовой стек (SFU + voice_web + nginx gateway) рядом с основным docker-compose.yml.
+# Запуск вместе с основным приложением:
+#   docker compose -f docker-compose.yml -f docker-compose.voice.yml up
+#
+# На хост пробрасывается только voice_gateway (HTTP/WS). voice_sfu и voice_web без ports/expose —
+# доступны только внутри сети voicenet (прокси gateway → web, gateway → SFU).
+#
+# WebRTC: RTP/UDP с браузера на хосте/LAN в контейнер SFU без проброса UDP на хост не дойдёт.
+# Нужен TURN (см. VITE_ICE_SERVERS_JSON) или отдельный сценарий с пробросом медиа.
+services:
+  voice_sfu:
+    build:
+      context: .
+      dockerfile: voice_sfu/Dockerfile
+    restart: unless-stopped
+    environment:
+      VOICE_HTTP_ADDR: ":8088"
+      VOICE_PUBLIC_IP: ${VOICE_PUBLIC_IP:-192.168.0.5}
+      # Опционально: диапазон UDP внутри контейнера для Pion (по умолчанию 10000–10100 в voice_sfu)
+      # VOICE_UDP_PORT_MIN: "10000"
+      # VOICE_UDP_PORT_MAX: "10100"
+    networks: [voicenet]
+
+  voice_web:
+    build:
+      context: .
+      dockerfile: voice_web/Dockerfile
+    restart: unless-stopped
+    networks: [voicenet]
+
+  voice_gateway:
+    build:
+      context: .
+      dockerfile: voice_gateway/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${VOICE_GATEWAY_PORT:-3091}:80"
+    depends_on:
+      - voice_web
+      - voice_sfu
+    networks: [voicenet]
+
+networks:
+  voicenet:
+    driver: bridge

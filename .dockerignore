@@ -18,6 +18,10 @@ front/node_modules
 front/dist
 server/node_modules
 
+# voice_web (Docker build uses npm ci в образе)
+voice_web/node_modules
+voice_web/dist
+
 # Прочее
 .env
 **/.DS_Store
