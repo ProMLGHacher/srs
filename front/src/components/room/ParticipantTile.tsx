@@ -51,10 +51,14 @@ export function ParticipantTile({
   compact,
 }: ParticipantTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const audioRef = useRef<HTMLAudioElement>(null)
   const [volume, setVolume] = useState(() => getPeerVolumePercent(member.peerId))
 
   const hasLiveVideo =
     !!stream?.getVideoTracks().some((t) => t.readyState === "live" && t.enabled && effectiveCamOn)
+
+  /** Без видео плитка не монтирует <video> — тогда нужен скрытый <audio>, иначе удалённый голос не слышен. */
+  const playRemoteAudioViaAudioEl = !isLocal && !hasLiveVideo && !!stream?.getAudioTracks().length
 
   useEffect(() => {
     const el = videoRef.current
@@ -64,6 +68,17 @@ export function ParticipantTile({
       el.srcObject = null
     }
   }, [stream])
+
+  useEffect(() => {
+    const el = audioRef.current
+    if (!el || isLocal) return
+    el.srcObject = playRemoteAudioViaAudioEl && stream ? stream : null
+    el.volume = volume / 100
+    if (playRemoteAudioViaAudioEl && stream) void el.play().catch(() => {})
+    return () => {
+      el.srcObject = null
+    }
+  }, [stream, playRemoteAudioViaAudioEl, volume, isLocal])
 
   useEffect(() => {
     if (isLocal || !videoRef.current) return
@@ -105,6 +120,9 @@ export function ParticipantTile({
         isPinned && "ring-1 ring-ring",
       )}
     >
+      {playRemoteAudioViaAudioEl ? (
+        <audio ref={audioRef} autoPlay playsInline className="sr-only pointer-events-none absolute h-0 w-0" aria-hidden />
+      ) : null}
       {hasLiveVideo ? (
         <video
           ref={videoRef}
