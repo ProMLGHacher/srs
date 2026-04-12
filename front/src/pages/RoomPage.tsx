@@ -8,6 +8,7 @@ import { loadDisplayName } from "@/lib/displayNameStorage"
 import { releasePendingJoinStream, takePendingJoinStream } from "@/lib/joinTransfer"
 import { isValidRoomId } from "@/lib/parseRoomId"
 import { useRoomUiStore } from "@/stores/roomUiStore"
+import { fastStartVideoConstraints } from "@/lib/webrtc/cameraConstraints"
 import { startWebrtcTiming } from "@/lib/webrtc/timingLog"
 
 type LocationState = {
@@ -128,7 +129,7 @@ function RoomPageInner({
           const t0 = performance.now()
           s = await navigator.mediaDevices.getUserMedia({
             audio: true,
-            video: startCam ? { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } } : false,
+            video: startCam ? fastStartVideoConstraints : false,
           })
           rt.mark("getUserMedia_done", { ms: Math.round((performance.now() - t0) * 10) / 10 })
           s.getAudioTracks().forEach((t) => {

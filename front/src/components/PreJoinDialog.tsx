@@ -12,6 +12,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { loadDisplayName, saveDisplayName } from "@/lib/displayNameStorage"
+import { fastStartVideoConstraints } from "@/lib/webrtc/cameraConstraints"
 import { startWebrtcTiming } from "@/lib/webrtc/timingLog"
 
 type PreJoinDialogProps = {
@@ -60,7 +61,7 @@ export function PreJoinDialog({ open, onOpenChange, roomId, onJoin }: PreJoinDia
         const t0 = performance.now()
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: true,
-          video: camOn ? { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } } : false,
+          video: camOn ? fastStartVideoConstraints : false,
         })
         pt.mark("getUserMedia_done", { ms: Math.round((performance.now() - t0) * 10) / 10 })
         if (!alive || transferredRef.current) {

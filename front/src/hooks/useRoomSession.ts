@@ -5,6 +5,7 @@ import { waitIceGathering } from "@/lib/webrtc/waitIceGathering"
 import { postSdp } from "@/lib/webrtc/postSdp"
 import { sanitizeWhepAnswerForChrome } from "@/lib/webrtc/sanitizeWhepAnswer"
 import { applyH264VideoPreferences, sdpOfferIncludesH264Video } from "@/lib/webrtc/h264Preference"
+import { fastStartVideoConstraints } from "@/lib/webrtc/cameraConstraints"
 import { logWebrtcTiming, shortPeerId, startWebrtcTiming } from "@/lib/webrtc/timingLog"
 
 function signalingWsUrl(): string {
@@ -349,7 +350,8 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
     const wsGen = sessionGen.current
     rt.mark("stopPublishing_called")
     stopPublishing()
-    const delayMs = 450
+    /** Минимальная пауза после unpublish перед новым WHIP (SRS); уменьшать только при стабильных тестах. */
+    const delayMs = 20
     await new Promise((r) => setTimeout(r, delayMs))
     rt.mark("after_srs_delay", { delayMs })
     if (wsGen !== sessionGen.current) {
@@ -589,7 +591,7 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
         const gm0 = performance.now()
         const v = await navigator.mediaDevices.getUserMedia({
           audio: false,
-          video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+          video: fastStartVideoConstraints,
         })
         ct.mark("getUserMedia_video_done", { ms: Math.round((performance.now() - gm0) * 10) / 10 })
         const vt = v.getVideoTracks()[0]

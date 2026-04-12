@@ -1,7 +1,7 @@
 import { logWebrtcTiming } from "./timingLog"
 
-/** Пауза после последнего ICE-кандидата перед POST SDP (Chrome часто не переходит в `complete` долго). */
-const ICE_IDLE_AFTER_CANDIDATE_MS = 600
+/** Пауза после последнего ICE-кандидата перед POST SDP; баланс скорость vs полнота SDP. */
+const ICE_IDLE_AFTER_CANDIDATE_MS = 320
 
 export type IceGatheringDoneReason =
   | "already_complete"
