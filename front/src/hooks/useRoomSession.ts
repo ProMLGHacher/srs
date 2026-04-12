@@ -109,14 +109,17 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
   )
 
   const subscribePeer = useCallback(
-    async (remotePeerId: string, gen: number) => {
+    async (remotePeerId: string, gen: number, wantVideo = true) => {
       if (remotePeerId === peerIdRef.current) return
       if (subsRef.current.has(remotePeerId)) return
       const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
       subsRef.current.set(remotePeerId, pc)
       patchPeerSubscribeStatus(remotePeerId, "Согласование медиа…")
-      pc.addTransceiver("video", { direction: "recvonly" })
+      /** Offer должен совпадать с потоком издателя: audio-only WHIP + video в offer ломает setRemoteDescription у Chrome. */
       pc.addTransceiver("audio", { direction: "recvonly" })
+      if (wantVideo) {
+        pc.addTransceiver("video", { direction: "recvonly" })
+      }
       pc.ontrack = (ev) => {
         const [stream] = ev.streams
         if (stream)
@@ -145,7 +148,7 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
         await waitIceGathering(pc)
         patchPeerSubscribeStatus(remotePeerId, "Согласование медиа…")
         const raw = await postSdp("/srs/rtc/v1/whep/", remotePeerId, pc.localDescription!.sdp)
-        const sdp = sanitizeWhepAnswerForChrome(raw)
+        const sdp = wantVideo ? sanitizeWhepAnswerForChrome(raw) : raw
         await pc.setRemoteDescription({ type: "answer", sdp })
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
@@ -288,7 +291,7 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
       for (const m of list) {
         if (m.peerId !== self && m.publishing) {
           n++
-          void subscribePeer(m.peerId, gen)
+          void subscribePeer(m.peerId, gen, m.camOn)
         }
       }
       setSubscribeLabel(n ? `Подписок: ${n}` : "Нет удалённых эфиров")
@@ -328,8 +331,15 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
           break
         }
         case "peer-publish": {
-          setMembers((prev) => prev.map((m) => (m.peerId === msg.peerId ? { ...m, publishing: true } : m)))
-          if (msg.peerId !== peerIdRef.current) void subscribePeer(msg.peerId, gen)
+          setMembers((prev) => {
+            const next = prev.map((m) => (m.peerId === msg.peerId ? { ...m, publishing: true } : m))
+            if (msg.peerId !== peerIdRef.current) {
+              const remote = next.find((m) => m.peerId === msg.peerId)
+              const wantVideo = remote?.camOn ?? true
+              queueMicrotask(() => void subscribePeer(msg.peerId, gen, wantVideo))
+            }
+            return next
+          })
           break
         }
         case "peer-unpublish": {
