@@ -138,7 +138,7 @@ export function ParticipantTile({
       )}
 
       {hasLiveVideo ? (
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 py-2 pt-8">
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-linear-to-t from-black/70 to-transparent px-2 py-2 pt-8">
           <span className="text-xs font-medium text-zinc-100">{nickname}</span>
         </div>
       ) : null}

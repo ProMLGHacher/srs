@@ -12,6 +12,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { loadDisplayName, saveDisplayName } from "@/lib/displayNameStorage"
+import { startWebrtcTiming } from "@/lib/webrtc/timingLog"
 
 type PreJoinDialogProps = {
   open: boolean
@@ -53,13 +54,18 @@ export function PreJoinDialog({ open, onOpenChange, roomId, onJoin }: PreJoinDia
     stopTracks(streamRef.current)
     streamRef.current = null
     void (async () => {
+      const pt = startWebrtcTiming("PreJoinDialog preview", { camOn })
+      pt.mark("getUserMedia_start")
       try {
+        const t0 = performance.now()
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: true,
           video: camOn ? { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } } : false,
         })
+        pt.mark("getUserMedia_done", { ms: Math.round((performance.now() - t0) * 10) / 10 })
         if (!alive || transferredRef.current) {
           stopTracks(stream)
+          pt.end("aborted_after_gum_alive_or_transferred")
           return
         }
         stream.getAudioTracks().forEach((t) => {
@@ -67,8 +73,10 @@ export function PreJoinDialog({ open, onOpenChange, roomId, onJoin }: PreJoinDia
         })
         streamRef.current = stream
         if (videoRef.current) videoRef.current.srcObject = stream
+        pt.end("preview_attached")
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : "Не удалось получить доступ к камере или микрофону")
+        pt.end("getUserMedia_error")
       }
     })()
     return () => {

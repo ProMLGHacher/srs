@@ -5,6 +5,7 @@ import { waitIceGathering } from "@/lib/webrtc/waitIceGathering"
 import { postSdp } from "@/lib/webrtc/postSdp"
 import { sanitizeWhepAnswerForChrome } from "@/lib/webrtc/sanitizeWhepAnswer"
 import { applyH264VideoPreferences, sdpOfferIncludesH264Video } from "@/lib/webrtc/h264Preference"
+import { logWebrtcTiming, shortPeerId, startWebrtcTiming } from "@/lib/webrtc/timingLog"
 
 function signalingWsUrl(): string {
   const explicit = import.meta.env.VITE_SIGNAL_WS as string | undefined
@@ -60,6 +61,8 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const micRef = useRef(opts.startMicOn)
   const camRef = useRef(opts.startCamOn)
+  /** Замер «от монтирования сессии до state» (один раз за жизнь эффекта WS). */
+  const signalingTimingRef = useRef<ReturnType<typeof startWebrtcTiming> | null>(null)
 
   const commitLocalStream = useCallback((next: MediaStream | null) => {
     localStreamRef.current = next
@@ -114,6 +117,13 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
     async (remotePeerId: string, gen: number, wantVideo = true) => {
       if (remotePeerId === peerId) return
       if (subsRef.current.has(remotePeerId)) return
+      const remoteShort = shortPeerId(remotePeerId)
+      const t = startWebrtcTiming(`WHEP subscribe → ${remoteShort}`, {
+        remote: remoteShort,
+        wantVideo,
+        sessionGen: gen,
+      })
+      t.mark("start")
       const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
       subsRef.current.set(remotePeerId, pc)
       patchPeerSubscribeStatus(remotePeerId, "Согласование медиа…")
@@ -122,21 +132,35 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
       if (wantVideo) {
         pc.addTransceiver("video", { direction: "recvonly" })
       }
+      t.mark("transceivers_added")
+      const iceLog = `WHEP ice → ${remoteShort}`
+      let firstRemoteTrack = true
       pc.ontrack = (ev) => {
         const [stream] = ev.streams
-        if (stream)
+        if (stream) {
+          if (firstRemoteTrack) {
+            firstRemoteTrack = false
+            t.mark("first_ontrack", { kinds: stream.getTracks().map((x) => x.kind) })
+          }
           setRemoteStreams((prev) => {
             const cur = prev[remotePeerId]
             if (cur?.id === stream.id) return prev
             return { ...prev, [remotePeerId]: stream }
           })
+        }
       }
       pc.onconnectionstatechange = () => {
         if (gen !== sessionGen.current) return
         const st = pc.connectionState
         if (st === "connected") {
+          logWebrtcTiming(`WHEP pc → ${remoteShort}`, "connectionState_connected", {
+            iceConnectionState: pc.iceConnectionState,
+          })
           patchPeerSubscribeStatus(remotePeerId, null)
         } else if (st === "failed") {
+          logWebrtcTiming(`WHEP pc → ${remoteShort}`, "connectionState_failed", {
+            iceConnectionState: pc.iceConnectionState,
+          })
           patchPeerSubscribeStatus(remotePeerId, "Ошибка WebRTC (подписка)")
         } else if (st === "disconnected") {
           patchPeerSubscribeStatus(remotePeerId, "Соединение прервано")
@@ -146,14 +170,21 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
       }
       try {
         const offer = await pc.createOffer()
+        t.mark("createOffer")
         await pc.setLocalDescription(offer)
-        await waitIceGathering(pc)
+        t.mark("setLocalDescription")
+        await waitIceGathering(pc, 15_000, iceLog)
+        t.mark("after_ice_gathering")
         patchPeerSubscribeStatus(remotePeerId, "Согласование медиа…")
         const raw = await postSdp("/srs/rtc/v1/whep/", remotePeerId, pc.localDescription!.sdp)
+        t.mark("after_postSdp")
         const sdp = wantVideo ? sanitizeWhepAnswerForChrome(raw) : raw
         await pc.setRemoteDescription({ type: "answer", sdp })
+        t.mark("setRemoteDescription_answer")
+        t.end("subscribe_offer_answer_done")
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
+        t.end("subscribe_error", { error: msg.slice(0, 120) })
         cleanupSub(remotePeerId, { clearTileStatus: false })
         patchPeerSubscribeStatus(remotePeerId, `Ошибка: ${msg.slice(0, 72)}`)
       }
@@ -162,6 +193,7 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
   )
 
   const stopPublishing = useCallback(() => {
+    logWebrtcTiming("WHIP", "stopPublishing", { peer: shortPeerId(peerId) })
     publishEpochRef.current += 1
     const pc = publishPcRef.current
     publishPcRef.current = null
@@ -178,11 +210,17 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
       }
     }
     setPublishLabel("Публикация выключена")
-  }, [])
+  }, [peerId])
 
   const startPublishing = useCallback(async (wsSessionGen: number) => {
     const stream = localStreamRef.current
     if (!stream || publishPcRef.current) return
+
+    const pubT = startWebrtcTiming(`WHIP publish ${shortPeerId(peerId)}`, {
+      peer: shortPeerId(peerId),
+      wsSessionGen,
+    })
+    pubT.mark("start")
 
     const epochSnapshot = publishEpochRef.current
     const superseded = (): boolean => epochSnapshot !== publishEpochRef.current
@@ -200,24 +238,39 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
     const audioTracks = stream.getAudioTracks().filter((t) => t.readyState === "live")
     const videoTracks = stream.getVideoTracks().filter((t) => t.readyState === "live")
     if (audioTracks.length === 0 && videoTracks.length === 0) {
+      pubT.end("aborted_no_tracks")
       setPublishLabel("Нет медиапотока")
       return
     }
 
+    pubT.mark("tracks_picked", {
+      audioLive: audioTracks.length,
+      videoLive: videoTracks.length,
+    })
+
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
     if (superseded()) {
       pc.close()
+      pubT.end("aborted_superseded_after_pc_new")
       return
     }
     publishPcRef.current = pc
+    pubT.mark("pc_created")
 
+    const whipIceLog = `WHIP ice ${shortPeerId(peerId)}`
     pc.onconnectionstatechange = () => {
       if (wsSessionGen !== sessionGen.current) return
       const st = pc.connectionState
       if (st === "connected") {
+        logWebrtcTiming(`WHIP pc ${shortPeerId(peerId)}`, "connectionState_connected", {
+          iceConnectionState: pc.iceConnectionState,
+        })
         publishLiveRef.current = true
         setPublishLabel("Медиа в эфире")
       } else if (st === "failed") {
+        logWebrtcTiming(`WHIP pc ${shortPeerId(peerId)}`, "connectionState_failed", {
+          iceConnectionState: pc.iceConnectionState,
+        })
         setPublishLabel("Ошибка WebRTC (публикация)")
       } else if (st === "connecting" || st === "new") {
         setPublishLabel("Установка соединения…")
@@ -238,53 +291,74 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
 
     try {
       const offer = await pc.createOffer()
+      pubT.mark("createOffer")
       if (superseded() || wsSessionGen !== sessionGen.current) {
         releaseIfOurPc(pc)
+        pubT.end("aborted_after_createOffer")
         return
       }
       await pc.setLocalDescription(offer)
+      pubT.mark("setLocalDescription")
       if (superseded() || wsSessionGen !== sessionGen.current) {
         releaseIfOurPc(pc)
+        pubT.end("aborted_after_setLocal")
         return
       }
       if (videoTracks.length > 0 && !sdpOfferIncludesH264Video(pc.localDescription?.sdp ?? "")) {
         setPublishLabel("Нет H.264 в предложении — SRS может отклонить публикацию")
       }
-      await waitIceGathering(pc)
+      await waitIceGathering(pc, 15_000, whipIceLog)
+      pubT.mark("after_ice_gathering")
       if (superseded() || wsSessionGen !== sessionGen.current) {
         releaseIfOurPc(pc)
+        pubT.end("aborted_after_ice")
         return
       }
       const raw = await postSdp("/srs/rtc/v1/whip/", peerId, pc.localDescription!.sdp)
+      pubT.mark("after_postSdp")
       if (superseded() || wsSessionGen !== sessionGen.current) {
         releaseIfOurPc(pc)
+        pubT.end("aborted_after_postSdp")
         return
       }
       await pc.setRemoteDescription({ type: "answer", sdp: raw })
+      pubT.mark("setRemoteDescription_answer")
       if (superseded() || wsSessionGen !== sessionGen.current) {
         releaseIfOurPc(pc)
+        pubT.end("aborted_after_setRemote")
         return
       }
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ t: "publishing" }))
       }
+      pubT.mark("ws_publishing_sent")
       publishLiveRef.current = true
       setPublishLabel("Медиа в эфире")
+      pubT.end("publish_flow_done")
     } catch (e) {
       releaseIfOurPc(pc)
       const msg = e instanceof Error ? e.message : String(e)
+      pubT.end("publish_error", { error: msg.slice(0, 120) })
       setPublishLabel(`Ошибка: ${msg.slice(0, 120)}`)
     }
   }, [peerId])
 
   /** SRS: после audio-only нельзя дотянуть видео тем же WHIP — полный стоп, пауза, новый publish. */
   const restartPublishing = useCallback(async () => {
+    const rt = startWebrtcTiming("WHIP restartPublishing", { peer: shortPeerId(peerId) })
     const wsGen = sessionGen.current
+    rt.mark("stopPublishing_called")
     stopPublishing()
-    await new Promise((r) => setTimeout(r, 450))
-    if (wsGen !== sessionGen.current) return
+    const delayMs = 450
+    await new Promise((r) => setTimeout(r, delayMs))
+    rt.mark("after_srs_delay", { delayMs })
+    if (wsGen !== sessionGen.current) {
+      rt.end("aborted_sessionGen_changed")
+      return
+    }
     await startPublishing(wsGen)
-  }, [startPublishing, stopPublishing])
+    rt.end("restartPublishing_done")
+  }, [peerId, startPublishing, stopPublishing])
 
   const subscribeAllPublishers = useCallback(
     (list: RoomMember[], gen: number) => {
@@ -297,6 +371,9 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
         }
       }
       setSubscribeLabel(n ? `Подписок: ${n}` : "Нет удалённых эфиров")
+      if (n > 0) {
+        logWebrtcTiming("subscribeAllPublishers", "scheduled", { count: n, sessionGen: gen })
+      }
     },
     [peerId, subscribePeer],
   )
@@ -305,10 +382,15 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
     (msg: SignalingInbound, gen: number) => {
       switch (msg.t) {
         case "state": {
+          signalingTimingRef.current?.mark("inbound_state_received", {
+            members: msg.members.length,
+          })
           joinedRef.current = true
           setMembers(msg.members)
           subscribeAllPublishers(msg.members, gen)
           void startPublishing(gen)
+          signalingTimingRef.current?.end("state_handled_while_publish_subscribe_async")
+          signalingTimingRef.current = null
           break
         }
         case "peer-join": {
@@ -333,6 +415,7 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
           break
         }
         case "peer-publish": {
+          logWebrtcTiming("signaling", "peer-publish", { from: shortPeerId(msg.peerId) })
           setMembers((prev) => {
             const next = prev.map((m) => (m.peerId === msg.peerId ? { ...m, publishing: true } : m))
             if (msg.peerId !== peerId) {
@@ -345,6 +428,7 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
           break
         }
         case "peer-unpublish": {
+          logWebrtcTiming("signaling", "peer-unpublish", { from: shortPeerId(msg.peerId) })
           cleanupSub(msg.peerId)
           setMembers((prev) => prev.map((m) => (m.peerId === msg.peerId ? { ...m, publishing: false } : m)))
           break
@@ -374,12 +458,29 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
   useEffect(() => {
     const gen = ++sessionGen.current
     joinedRef.current = false
+    const sigT = startWebrtcTiming("signaling WS", {
+      roomId: shortPeerId(opts.roomId),
+      sessionGen: gen,
+    })
+    signalingTimingRef.current = sigT
+    sigT.mark("effect_mount")
     setWsLabel("Подключение…")
-    const ws = new WebSocket(signalingWsUrl())
+    const wsUrl = signalingWsUrl()
+    const ws = new WebSocket(wsUrl)
     wsRef.current = ws
+    sigT.mark("websocket_created", {
+      urlHost: (() => {
+        try {
+          return new URL(wsUrl).host
+        } catch {
+          return "?"
+        }
+      })(),
+    })
 
     ws.onopen = () => {
       if (gen !== sessionGen.current) return
+      sigT.mark("ws_open_join_sending")
       setWsLabel("Сигналинг активен")
       ws.send(
         JSON.stringify({
@@ -397,7 +498,11 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
     ws.onmessage = (ev) => {
       if (gen !== sessionGen.current) return
       try {
-        const msg = JSON.parse(String(ev.data)) as SignalingInbound
+        const raw = String(ev.data)
+        const msg = JSON.parse(raw) as SignalingInbound
+        if (msg.t !== "state" && msg.t !== "pong") {
+          logWebrtcTiming("signaling WS", "inbound_message", { t: msg.t, bytes: raw.length })
+        }
         inboundRef.current(msg, gen)
       } catch {
         /* ignore */
@@ -411,6 +516,10 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
 
     ws.onclose = () => {
       if (gen !== sessionGen.current) return
+      if (signalingTimingRef.current === sigT) {
+        sigT.end("ws_closed_before_state")
+        signalingTimingRef.current = null
+      }
       setWsLabel("Отключено от сигналинга")
       if (heartbeatRef.current) {
         clearInterval(heartbeatRef.current)
@@ -419,6 +528,7 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
     }
 
     return () => {
+      signalingTimingRef.current = null
       /* На размонтировании нужны актуальные sessionGen/subs, а не снимок на открытии эффекта. */
       /* eslint-disable react-hooks/exhaustive-deps */
       sessionGen.current++
@@ -457,37 +567,51 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
   }, [sendPresence])
 
   const toggleCam = useCallback(async () => {
+    const ct = startWebrtcTiming("toggleCam", { peer: shortPeerId(peerId) })
     const next = !camRef.current
+    ct.mark("start", { camWillBeOn: next })
     camRef.current = next
     setLocalCamOn(next)
     const stream = localStreamRef.current
-    if (!stream) return
+    if (!stream) {
+      ct.end("aborted_no_stream")
+      return
+    }
 
     if (!next) {
       for (const t of [...stream.getVideoTracks()]) {
         stream.removeTrack(t)
         stopTrack(t)
       }
+      ct.mark("video_tracks_removed")
     } else {
       try {
+        const gm0 = performance.now()
         const v = await navigator.mediaDevices.getUserMedia({
           audio: false,
           video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
         })
+        ct.mark("getUserMedia_video_done", { ms: Math.round((performance.now() - gm0) * 10) / 10 })
         const vt = v.getVideoTracks()[0]
         if (vt) stream.addTrack(vt)
       } catch (e) {
         camRef.current = false
         setLocalCamOn(false)
         setMediaError(e instanceof Error ? e.message : "Камера недоступна")
+        ct.end("getUserMedia_failed")
         return
       }
     }
 
     commitLocalStream(stream)
     sendPresence()
-    if (joinedRef.current) await restartPublishing()
-  }, [commitLocalStream, restartPublishing, sendPresence])
+    ct.mark("presence_sent")
+    if (joinedRef.current) {
+      await restartPublishing()
+      ct.mark("after_restartPublishing")
+    }
+    ct.end("toggleCam_done")
+  }, [commitLocalStream, peerId, restartPublishing, sendPresence])
 
   const leave = useCallback(() => {
     sessionGen.current++

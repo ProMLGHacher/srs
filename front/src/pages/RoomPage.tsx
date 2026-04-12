@@ -8,6 +8,7 @@ import { loadDisplayName } from "@/lib/displayNameStorage"
 import { releasePendingJoinStream, takePendingJoinStream } from "@/lib/joinTransfer"
 import { isValidRoomId } from "@/lib/parseRoomId"
 import { useRoomUiStore } from "@/stores/roomUiStore"
+import { startWebrtcTiming } from "@/lib/webrtc/timingLog"
 
 type LocationState = {
   nickname?: string
@@ -118,26 +119,34 @@ function RoomPageInner({
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
+    const rt = startWebrtcTiming("RoomPageInner media prep", { startCam, startMic })
     let s = takePendingJoinStream()
     if (!s) {
+      rt.mark("no_pending_stream_getUserMedia")
       void (async () => {
         try {
+          const t0 = performance.now()
           s = await navigator.mediaDevices.getUserMedia({
             audio: true,
             video: startCam ? { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } } : false,
           })
+          rt.mark("getUserMedia_done", { ms: Math.round((performance.now() - t0) * 10) / 10 })
           s.getAudioTracks().forEach((t) => {
             t.enabled = startMic
           })
         } catch {
           s = null
+          rt.mark("getUserMedia_failed")
         }
         setInitialStream(s)
         setReady(true)
+        rt.end("ready_for_room_session")
       })()
     } else {
+      rt.mark("used_pending_join_stream")
       setInitialStream(s)
       setReady(true)
+      rt.end("ready_for_room_session")
     }
   }, [startCam, startMic])
 
