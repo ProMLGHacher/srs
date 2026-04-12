@@ -61,6 +61,8 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
   const sessionGen = useRef(0)
   const joinedRef = useRef(false)
   const publishLiveRef = useRef(false)
+  /** Увеличивается при stopPublishing — отменяет «зависший» startPublishing (SRS + гонки с toggleCam). */
+  const publishEpochRef = useRef(0)
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const micRef = useRef(opts.startMicOn)
   const camRef = useRef(opts.startCamOn)
@@ -155,81 +157,128 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
   )
 
   const stopPublishing = useCallback(() => {
+    publishEpochRef.current += 1
     const pc = publishPcRef.current
     publishPcRef.current = null
-    if (pc) pc.close()
     publishLiveRef.current = false
     const ws = wsRef.current
-    if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: "unpublish" }))
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ t: "unpublish" }))
+    }
+    if (pc) {
+      try {
+        pc.close()
+      } catch {
+        /* ignore */
+      }
+    }
     setPublishLabel("Публикация выключена")
   }, [])
 
-  const startPublishing = useCallback(
-    async (gen: number) => {
-      const stream = localStreamRef.current
-      if (!stream || publishPcRef.current) return
-      setPublishLabel("Согласование медиа…")
-      const audioTracks = stream.getAudioTracks()
-      const videoTracks = stream.getVideoTracks().filter((t) => t.readyState === "live")
-      if (audioTracks.length === 0 && videoTracks.length === 0) {
-        setPublishLabel("Нет медиапотока")
-        return
-      }
-      const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
-      publishPcRef.current = pc
-      pc.onconnectionstatechange = () => {
-        if (gen !== sessionGen.current) return
-        const st = pc.connectionState
-        if (st === "connected") {
-          publishLiveRef.current = true
-          setPublishLabel("Медиа в эфире")
-        } else if (st === "failed") {
-          setPublishLabel("Ошибка WebRTC (публикация)")
-        } else if (st === "connecting" || st === "new") {
-          setPublishLabel("Установка соединения…")
-        }
-      }
-      for (const t of audioTracks) {
-        if (micRef.current) t.enabled = true
-        else t.enabled = false
-        pc.addTrack(t, stream)
-      }
-      for (const t of videoTracks) {
-        if (camRef.current) t.enabled = true
-        else t.enabled = false
-        pc.addTrack(t, stream)
-      }
-      applyH264VideoPreferences(pc)
+  const startPublishing = useCallback(async (wsSessionGen: number) => {
+    const stream = localStreamRef.current
+    if (!stream || publishPcRef.current) return
+
+    const epochSnapshot = publishEpochRef.current
+    const superseded = (): boolean => epochSnapshot !== publishEpochRef.current
+
+    const releaseIfOurPc = (pc: RTCPeerConnection): void => {
+      if (publishPcRef.current === pc) publishPcRef.current = null
       try {
-        const offer = await pc.createOffer()
-        await pc.setLocalDescription(offer)
-        if (!sdpOfferIncludesH264Video(pc.localDescription?.sdp ?? "") && videoTracks.length > 0) {
-          setPublishLabel("Нет H.264 в предложении — SRS может отклонить публикацию")
-        }
-        await waitIceGathering(pc)
-        const raw = await postSdp("/srs/rtc/v1/whip/", peerIdRef.current, pc.localDescription!.sdp)
-        await pc.setRemoteDescription({ type: "answer", sdp: raw })
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({ t: "publishing" }))
-        }
+        pc.close()
+      } catch {
+        /* ignore */
+      }
+    }
+
+    setPublishLabel("Согласование медиа…")
+    const audioTracks = stream.getAudioTracks().filter((t) => t.readyState === "live")
+    const videoTracks = stream.getVideoTracks().filter((t) => t.readyState === "live")
+    if (audioTracks.length === 0 && videoTracks.length === 0) {
+      setPublishLabel("Нет медиапотока")
+      return
+    }
+
+    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
+    if (superseded()) {
+      pc.close()
+      return
+    }
+    publishPcRef.current = pc
+
+    pc.onconnectionstatechange = () => {
+      if (wsSessionGen !== sessionGen.current) return
+      const st = pc.connectionState
+      if (st === "connected") {
         publishLiveRef.current = true
         setPublishLabel("Медиа в эфире")
-      } catch (e) {
-        pc.close()
-        publishPcRef.current = null
-        const msg = e instanceof Error ? e.message : String(e)
-        setPublishLabel(`Ошибка: ${msg.slice(0, 120)}`)
+      } else if (st === "failed") {
+        setPublishLabel("Ошибка WebRTC (публикация)")
+      } else if (st === "connecting" || st === "new") {
+        setPublishLabel("Установка соединения…")
       }
-    },
-    [],
-  )
+    }
 
+    for (const t of audioTracks) {
+      t.enabled = micRef.current
+      pc.addTrack(t, stream)
+    }
+    for (const t of videoTracks) {
+      t.enabled = camRef.current
+      pc.addTrack(t, stream)
+    }
+    if (videoTracks.length > 0) {
+      applyH264VideoPreferences(pc)
+    }
+
+    try {
+      const offer = await pc.createOffer()
+      if (superseded() || wsSessionGen !== sessionGen.current) {
+        releaseIfOurPc(pc)
+        return
+      }
+      await pc.setLocalDescription(offer)
+      if (superseded() || wsSessionGen !== sessionGen.current) {
+        releaseIfOurPc(pc)
+        return
+      }
+      if (videoTracks.length > 0 && !sdpOfferIncludesH264Video(pc.localDescription?.sdp ?? "")) {
+        setPublishLabel("Нет H.264 в предложении — SRS может отклонить публикацию")
+      }
+      await waitIceGathering(pc)
+      if (superseded() || wsSessionGen !== sessionGen.current) {
+        releaseIfOurPc(pc)
+        return
+      }
+      const raw = await postSdp("/srs/rtc/v1/whip/", peerIdRef.current, pc.localDescription!.sdp)
+      if (superseded() || wsSessionGen !== sessionGen.current) {
+        releaseIfOurPc(pc)
+        return
+      }
+      await pc.setRemoteDescription({ type: "answer", sdp: raw })
+      if (superseded() || wsSessionGen !== sessionGen.current) {
+        releaseIfOurPc(pc)
+        return
+      }
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ t: "publishing" }))
+      }
+      publishLiveRef.current = true
+      setPublishLabel("Медиа в эфире")
+    } catch (e) {
+      releaseIfOurPc(pc)
+      const msg = e instanceof Error ? e.message : String(e)
+      setPublishLabel(`Ошибка: ${msg.slice(0, 120)}`)
+    }
+  }, [])
+
+  /** SRS: после audio-only нельзя дотянуть видео тем же WHIP — полный стоп, пауза, новый publish. */
   const restartPublishing = useCallback(async () => {
-    const gen = sessionGen.current
+    const wsGen = sessionGen.current
     stopPublishing()
-    await new Promise((r) => setTimeout(r, 80))
-    if (gen !== sessionGen.current) return
-    await startPublishing(gen)
+    await new Promise((r) => setTimeout(r, 450))
+    if (wsGen !== sessionGen.current) return
+    await startPublishing(wsGen)
   }, [startPublishing, stopPublishing])
 
   const subscribeAllPublishers = useCallback(
