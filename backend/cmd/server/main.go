@@ -13,6 +13,7 @@ import (
 
 	"srs/backend/internal/api"
 	"srs/backend/internal/config"
+	"srs/backend/internal/docs"
 	"srs/backend/internal/srs"
 	wshub "srs/backend/internal/ws"
 
@@ -59,6 +60,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
+	docs.Register(mux)
 
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

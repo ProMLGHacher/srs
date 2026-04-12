@@ -1,0 +1,131 @@
+openapi: 3.0.3
+info:
+  title: SRS Rooms signaling API
+  description: |
+    HTTP-эндпоинты приложения и описание WebSocket-сигналинга (`/api/ws`).
+    Медиа: WHIP/WHEP к SRS, не через этот сервис.
+  version: "1.0.0"
+
+servers:
+  - url: /
+    description: Тот же хост, что и у клиента (например nginx → app:3001)
+
+tags:
+  - name: health
+    description: Проверка живости и конфигурации SRS
+  - name: rooms
+    description: Создание комнаты
+  - name: signaling
+    description: WebSocket JSON-сообщения
+
+paths:
+  /api/health:
+    get:
+      tags: [health]
+      summary: Health check
+      operationId: getHealth
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /api/rooms:
+    post:
+      tags: [rooms]
+      summary: Создать комнату
+      description: Сервер генерирует идентификатор комнаты.
+      operationId: createRoom
+      responses:
+        "200":
+          description: Идентификатор комнаты
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateRoomResponse"
+        "405":
+          description: Method not allowed
+
+  /api/ws:
+    get:
+      tags: [signaling]
+      summary: WebSocket сигналинг
+      description: |
+        `GET` с заголовками Upgrade. После установки соединения обмен — **текстовые** JSON-сообщения с полем **`t`** (тип).
+
+        **Клиент → сервер**
+        | `t` | Поля | Примечание |
+        |-----|------|------------|
+        | `ping` | — | Ответ: `pong` |
+        | `join` | `roomId`, `peerId`, `nickname` | Обязательны; `nickname` ≤ 64 символов |
+        | `publishing` | — | Начало публикации (трансляция) |
+        | `unpublish` | — | Конец публикации |
+        | `presence` | `micOn`, `camOn` (boolean, опционально) | Обновление UI присутствия |
+
+        **Сервер → клиент**
+        | `t` | Поля |
+        |-----|------|
+        | `pong` | — |
+        | `error` | `message` |
+        | `state` | `members` — массив участников |
+        | `peer-join` | `peerId`, `nickname`, `publishing`, `micOn`, `camOn` |
+        | `peer-leave` | `peerId` |
+        | `peer-publish` | `peerId` |
+        | `peer-unpublish` | `peerId` |
+        | `peer-presence` | `peerId`, `micOn`, `camOn` |
+
+        Элемент **`members`** и поля участника см. в схеме `Member`.
+      operationId: signalingWebSocket
+      responses:
+        "101":
+          description: Switching Protocols (WebSocket)
+        "405":
+          description: Method not allowed
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      required: [ok, srs, srsFetch, eip]
+      properties:
+        ok:
+          type: boolean
+          example: true
+        srs:
+          type: string
+          description: SRS_HTTP из конфигурации
+          example: "http://127.0.0.1:1985"
+        srsFetch:
+          type: string
+          description: Реальный origin для HTTP-запросов к SRS (может отличаться после DNS)
+        eip:
+          type: string
+          description: SRS_EIP (кандидат для ICE и т.п.)
+          example: "127.0.0.1"
+
+    CreateRoomResponse:
+      type: object
+      required: [roomId]
+      properties:
+        roomId:
+          type: string
+          description: 8 байт в hex (16 символов)
+          pattern: "^[0-9a-f]{16}$"
+          example: "856923b41fea2692"
+
+    Member:
+      type: object
+      required: [peerId, nickname, publishing, micOn, camOn]
+      properties:
+        peerId:
+          type: string
+        nickname:
+          type: string
+        publishing:
+          type: boolean
+        micOn:
+          type: boolean
+        camOn:
+          type: boolean

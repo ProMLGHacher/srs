@@ -1,10 +1,8 @@
 FROM node:20-alpine AS front-build
-WORKDIR /build/front_app
-COPY kvatum /build/kvatum
-COPY front_app/package.json front_app/package-lock.json ./
+WORKDIR /build/front
+COPY front/package.json front/package-lock.json ./
 RUN npm ci
-RUN ln -s /build/front_app/node_modules /build/node_modules
-COPY front_app/ /build/front_app/
+COPY front/ ./
 RUN npm run build
 
 FROM golang:1.23-alpine AS go-build
@@ -25,6 +23,6 @@ EXPOSE 3001
 CMD ["./server"]
 
 FROM nginx:1.27-alpine AS nginx
-COPY --from=front-build /build/front_app/dist /usr/share/nginx/html
+COPY --from=front-build /build/front/dist /usr/share/nginx/html
 COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80

@@ -8,7 +8,9 @@ import { MediaSettingsModal } from "./MediaSettingsModal"
 export function LobbyPage(_: unknown, VM = LobbyViewModel) {
   const navigate = useNavigate()
   const vm = useViewModel(VM)
-  const snap = useStateFlow(vm.state)
+
+  const state = useStateFlow(vm.state)
+
   const [settingsOpen, setSettingsOpen] = useState(false)
 
   const trimmedNick = snap.nickname.trim()

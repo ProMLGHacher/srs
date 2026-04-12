@@ -7,7 +7,7 @@ services:
     ports:
       - "8000:8000/udp"
     environment:
-      CANDIDATE: ${SRS_CANDIDATE_IP:-127.0.0.1}
+      CANDIDATE: ${SRS_CANDIDATE_IP:-192.168.0.5}
     networks: [srsnet]
 
   app:
@@ -19,7 +19,7 @@ services:
       - srs
     environment:
       SRS_HTTP: http://srs:1985
-      SRS_EIP: ${SRS_CANDIDATE_IP:-127.0.0.1}
+      SRS_EIP: ${SRS_CANDIDATE_IP:-192.168.0.5}
     dns_opt:
       - "ndots:0"
     networks: [srsnet]
