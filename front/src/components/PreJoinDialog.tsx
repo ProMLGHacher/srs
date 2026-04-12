@@ -121,7 +121,13 @@ export function PreJoinDialog({ open, onOpenChange, roomId, onJoin }: PreJoinDia
         </DialogHeader>
         <div className="space-y-4">
           <div className="relative aspect-video overflow-hidden rounded-md border border-border bg-muted">
-            <video ref={videoRef} autoPlay playsInline muted className="h-full w-full object-cover" />
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              className="h-full w-full scale-x-[-1] object-cover"
+            />
             {!camOn ? (
               <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
                 Камера выключена

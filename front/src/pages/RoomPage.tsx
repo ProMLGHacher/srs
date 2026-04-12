@@ -86,6 +86,7 @@ function RoomSessionView({
         localMicOn={session.localMicOn}
         localCamOn={session.localCamOn}
         getStream={getStream}
+        peerSubscribeStatus={session.peerSubscribeStatus}
         pinnedPeerId={pinnedPeerId}
         onPin={setPinnedPeerId}
         onUnpin={() => setPinnedPeerId(null)}

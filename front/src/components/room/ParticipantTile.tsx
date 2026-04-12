@@ -30,6 +30,8 @@ type ParticipantTileProps = {
   /** Для локального участника — фактическое состояние UI (сервер не эхоит presence себе). */
   effectiveMicOn: boolean
   effectiveCamOn: boolean
+  /** Для удалённого пира: этапы WHEP (скрывается при `connected`). */
+  remoteMediaStatus?: string
   isPinned: boolean
   onPin: () => void
   onUnpin: () => void
@@ -42,6 +44,7 @@ export function ParticipantTile({
   stream,
   effectiveMicOn,
   effectiveCamOn,
+  remoteMediaStatus,
   isPinned,
   onPin,
   onUnpin,
@@ -108,7 +111,7 @@ export function ParticipantTile({
           autoPlay
           playsInline
           muted={isLocal}
-          className="h-full w-full object-cover"
+          className={cn("h-full w-full object-cover", isLocal && "scale-x-[-1]")}
         />
       ) : (
         <div className="flex flex-1 items-center justify-center px-4">
@@ -119,6 +122,19 @@ export function ParticipantTile({
       {hasLiveVideo ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 py-2 pt-8">
           <span className="text-xs font-medium text-zinc-100">{nickname}</span>
+        </div>
+      ) : null}
+
+      {!isLocal && remoteMediaStatus ? (
+        <div
+          className={cn(
+            "pointer-events-none absolute inset-x-0 flex justify-center px-2",
+            compact ? "top-8" : "top-11 sm:top-12",
+          )}
+        >
+          <span className="max-w-full truncate rounded bg-black/70 px-2 py-1 text-center text-[11px] font-medium leading-tight text-zinc-100">
+            {remoteMediaStatus}
+          </span>
         </div>
       ) : null}
 

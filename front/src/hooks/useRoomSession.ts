@@ -51,6 +51,8 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
   const [publishLabel, setPublishLabel] = useState("Ожидание сигналинга")
   const [subscribeLabel, setSubscribeLabel] = useState("—")
   const [mediaError, setMediaError] = useState<string | null>(null)
+  /** Статус WHEP по удалённому peerId (как в шапке); пусто = соединение установлено или не ведётся. */
+  const [peerSubscribeStatus, setPeerSubscribeStatus] = useState<Record<string, string>>({})
 
   const wsRef = useRef<WebSocket | null>(null)
   const publishPcRef = useRef<RTCPeerConnection | null>(null)
@@ -73,18 +75,36 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
     camRef.current = localCamOn
   }, [localCamOn])
 
-  const cleanupSub = useCallback((remotePeerId: string) => {
-    const pc = subsRef.current.get(remotePeerId)
-    if (pc) {
-      pc.close()
-      subsRef.current.delete(remotePeerId)
-    }
-    setRemoteStreams((prev) => {
-      const n = { ...prev }
-      delete n[remotePeerId]
-      return n
+  const patchPeerSubscribeStatus = useCallback((peerId: string, message: string | null) => {
+    setPeerSubscribeStatus((prev) => {
+      if (message == null || message === "") {
+        if (!(peerId in prev)) return prev
+        const next = { ...prev }
+        delete next[peerId]
+        return next
+      }
+      if (prev[peerId] === message) return prev
+      return { ...prev, [peerId]: message }
     })
   }, [])
+
+  const cleanupSub = useCallback(
+    (remotePeerId: string, opts?: { clearTileStatus?: boolean }) => {
+      const clearTile = opts?.clearTileStatus !== false
+      const pc = subsRef.current.get(remotePeerId)
+      if (pc) {
+        pc.close()
+        subsRef.current.delete(remotePeerId)
+      }
+      setRemoteStreams((prev) => {
+        const n = { ...prev }
+        delete n[remotePeerId]
+        return n
+      })
+      if (clearTile) patchPeerSubscribeStatus(remotePeerId, null)
+    },
+    [patchPeerSubscribeStatus],
+  )
 
   const subscribePeer = useCallback(
     async (remotePeerId: string, gen: number) => {
@@ -92,6 +112,7 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
       if (subsRef.current.has(remotePeerId)) return
       const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
       subsRef.current.set(remotePeerId, pc)
+      patchPeerSubscribeStatus(remotePeerId, "Согласование медиа…")
       pc.addTransceiver("video", { direction: "recvonly" })
       pc.addTransceiver("audio", { direction: "recvonly" })
       pc.ontrack = (ev) => {
@@ -106,24 +127,31 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
       pc.onconnectionstatechange = () => {
         if (gen !== sessionGen.current) return
         const st = pc.connectionState
-        if (st === "failed" || st === "disconnected") {
-          setSubscribeLabel("Есть проблемы с удалённым медиа (ICE / сеть)")
+        if (st === "connected") {
+          patchPeerSubscribeStatus(remotePeerId, null)
+        } else if (st === "failed") {
+          patchPeerSubscribeStatus(remotePeerId, "Ошибка WebRTC (подписка)")
+        } else if (st === "disconnected") {
+          patchPeerSubscribeStatus(remotePeerId, "Соединение прервано")
+        } else if (st === "connecting" || st === "new") {
+          patchPeerSubscribeStatus(remotePeerId, "Установка соединения…")
         }
       }
       try {
         const offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
         await waitIceGathering(pc)
+        patchPeerSubscribeStatus(remotePeerId, "Согласование медиа…")
         const raw = await postSdp("/srs/rtc/v1/whep/", remotePeerId, pc.localDescription!.sdp)
         const sdp = sanitizeWhepAnswerForChrome(raw)
         await pc.setRemoteDescription({ type: "answer", sdp })
       } catch (e) {
-        cleanupSub(remotePeerId)
         const msg = e instanceof Error ? e.message : String(e)
-        setSubscribeLabel(`Ошибка подписки: ${msg.slice(0, 80)}`)
+        cleanupSub(remotePeerId, { clearTileStatus: false })
+        patchPeerSubscribeStatus(remotePeerId, `Ошибка: ${msg.slice(0, 72)}`)
       }
     },
-    [cleanupSub],
+    [cleanupSub, patchPeerSubscribeStatus],
   )
 
   const stopPublishing = useCallback(() => {
@@ -337,6 +365,7 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
       wsRef.current = null
       stopPublishing()
       for (const id of [...subsRef.current.keys()]) cleanupSub(id)
+      setPeerSubscribeStatus({})
       localStreamRef.current?.getTracks().forEach(stopTrack)
       localStreamRef.current = null
       setLocalStream(null)
@@ -404,6 +433,7 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
     wsRef.current = null
     stopPublishing()
     for (const id of [...subsRef.current.keys()]) cleanupSub(id)
+    setPeerSubscribeStatus({})
     localStreamRef.current?.getTracks().forEach(stopTrack)
     localStreamRef.current = null
     setLocalStream(null)
@@ -414,6 +444,7 @@ export function useRoomSession(opts: UseRoomSessionOpts) {
     members,
     localStream,
     remoteStreams,
+    peerSubscribeStatus,
     localMicOn,
     localCamOn,
     wsLabel,

@@ -9,6 +9,7 @@ type TileGridProps = {
   localMicOn: boolean
   localCamOn: boolean
   getStream: (peerId: string) => MediaStream | undefined
+  peerSubscribeStatus: Record<string, string>
   pinnedPeerId: string | null
   onPin: (peerId: string) => void
   onUnpin: () => void
@@ -28,6 +29,7 @@ export function TileGrid({
   localMicOn,
   localCamOn,
   getStream,
+  peerSubscribeStatus,
   pinnedPeerId,
   onPin,
   onUnpin,
@@ -46,6 +48,7 @@ export function TileGrid({
         stream={getStream(m.peerId)}
         effectiveMicOn={isLocal ? localMicOn : m.micOn}
         effectiveCamOn={isLocal ? localCamOn : m.camOn}
+        remoteMediaStatus={isLocal ? undefined : peerSubscribeStatus[m.peerId]}
         isPinned={pinnedPeerId === m.peerId}
         onPin={() => onPin(m.peerId)}
         onUnpin={onUnpin}
