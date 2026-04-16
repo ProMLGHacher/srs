@@ -55,6 +55,10 @@ type Peer struct {
 	renegoMu      sync.Mutex
 	renegoPending bool
 
+	presMu sync.RWMutex
+	micOn  bool
+	camOn  bool
+
 	closed  bool
 	closeMu sync.Mutex
 }
@@ -70,11 +74,13 @@ func NewPeer(room *Room, name string, ws WSSender, api *webrtc.API) (*Peer, erro
 		return nil, err
 	}
 	p := &Peer{
-		id:   id,
-		name: name,
-		room: room,
-		ws:   ws,
-		pc:   pc,
+		id:    id,
+		name:  name,
+		room:  room,
+		ws:    ws,
+		pc:    pc,
+		micOn: true,
+		camOn: true,
 	}
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c == nil {
@@ -99,7 +105,7 @@ func NewPeer(room *Room, name string, ws WSSender, api *webrtc.API) (*Peer, erro
 		p.published = append(p.published, pm)
 		p.publishedMu.Unlock()
 		for _, other := range p.room.Others(p.id) {
-			if err := pm.addSubscriber(other); err != nil {
+			if err := pm.addSubscriber(other, p.id); err != nil {
 				log.Printf("addSubscriber %s <- %s: %v", other.id, p.id, err)
 			}
 		}
@@ -109,6 +115,24 @@ func NewPeer(room *Room, name string, ws WSSender, api *webrtc.API) (*Peer, erro
 
 func (p *Peer) ID() string   { return p.id }
 func (p *Peer) Name() string { return p.name }
+
+func (p *Peer) SetPresence(micOn, camOn bool) {
+	p.presMu.Lock()
+	p.micOn, p.camOn = micOn, camOn
+	p.presMu.Unlock()
+}
+
+func (p *Peer) Presence() (micOn, camOn bool) {
+	p.presMu.RLock()
+	defer p.presMu.RUnlock()
+	return p.micOn, p.camOn
+}
+
+func (p *Peer) Publishing() bool {
+	p.publishedMu.Lock()
+	defer p.publishedMu.Unlock()
+	return len(p.published) > 0
+}
 
 func (p *Peer) WriteSignal(kind, sdp string, candidate json.RawMessage) error {
 	p.wl.Lock()
@@ -185,7 +209,7 @@ func (p *Peer) flushExistingPublishers() {
 		pubs := append([]*PublishedMedia(nil), other.published...)
 		other.publishedMu.Unlock()
 		for _, pm := range pubs {
-			if err := pm.addSubscriber(p); err != nil {
+			if err := pm.addSubscriber(p, other.id); err != nil {
 				log.Printf("flush addSubscriber %s <- %s: %v", p.id, other.id, err)
 			}
 		}

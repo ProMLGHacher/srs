@@ -16,12 +16,14 @@ import "encoding/json"
 type MessageType string
 
 const (
-	TypeJoin       MessageType = "join"
-	TypeSignal     MessageType = "signal"
-	TypeJoined     MessageType = "joined"
-	TypePeerJoined MessageType = "peer_joined"
-	TypePeerLeft   MessageType = "peer_left"
-	TypeError      MessageType = "error"
+	TypeJoin         MessageType = "join"
+	TypeSignal       MessageType = "signal"
+	TypePresence     MessageType = "presence"
+	TypeJoined       MessageType = "joined"
+	TypePeerJoined   MessageType = "peer_joined"
+	TypePeerLeft     MessageType = "peer_left"
+	TypePeerPresence MessageType = "peer_presence"
+	TypeError        MessageType = "error"
 )
 
 type ClientMessage struct {
@@ -29,6 +31,9 @@ type ClientMessage struct {
 	// join
 	Room string `json:"room,omitempty"`
 	Name string `json:"name,omitempty"`
+	// join initial presence or presence update (optional on join → default true)
+	MicOn *bool `json:"micOn,omitempty"`
+	CamOn *bool `json:"camOn,omitempty"`
 	// signal
 	Kind      string          `json:"kind,omitempty"` // offer | answer | ice
 	SDP       string          `json:"sdp,omitempty"`
@@ -36,8 +41,11 @@ type ClientMessage struct {
 }
 
 type PeerInfo struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	MicOn      bool   `json:"micOn"`
+	CamOn      bool   `json:"camOn"`
+	Publishing bool   `json:"publishing"`
 }
 
 type ServerMessage struct {

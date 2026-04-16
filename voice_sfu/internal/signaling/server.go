@@ -47,6 +47,17 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	go s.runSession(conn)
 }
 
+func peerToInfo(p *sfu.Peer) protocol.PeerInfo {
+	mic, cam := p.Presence()
+	return protocol.PeerInfo{
+		ID:         p.ID(),
+		Name:       p.Name(),
+		MicOn:      mic,
+		CamOn:      cam,
+		Publishing: p.Publishing(),
+	}
+}
+
 func (s *Server) runSession(conn *websocket.Conn) {
 	defer conn.Close()
 
@@ -78,6 +89,15 @@ func (s *Server) runSession(conn *websocket.Conn) {
 		return
 	}
 
+	mic := true
+	cam := true
+	if join.MicOn != nil {
+		mic = *join.MicOn
+	}
+	if join.CamOn != nil {
+		cam = *join.CamOn
+	}
+
 	room = s.mgr.GetOrCreate(join.Room)
 	p, err := sfu.NewPeer(room, join.Name, conn, s.api)
 	if err != nil {
@@ -86,10 +106,11 @@ func (s *Server) runSession(conn *websocket.Conn) {
 		_ = conn.WriteJSON(protocol.ServerMessage{Type: protocol.TypeError, Message: "pc failed"})
 		return
 	}
+	p.SetPresence(mic, cam)
 	peer = p
 	room.AddPeer(peer)
 
-	roster := rosterFor(room, peer.ID())
+	roster := rosterInfos(room, peer.ID())
 	if err := peer.SendServer(protocol.ServerMessage{
 		Type:   protocol.TypeJoined,
 		PeerID: peer.ID(),
@@ -108,33 +129,46 @@ func (s *Server) runSession(conn *websocket.Conn) {
 		if err := json.Unmarshal(data, &msg); err != nil {
 			continue
 		}
-		if msg.Type != protocol.TypeSignal {
-			continue
-		}
-		switch msg.Kind {
-		case "offer":
-			if err := peer.HandleOffer(msg.SDP); err != nil {
-				log.Printf("HandleOffer: %v", err)
+		switch msg.Type {
+		case protocol.TypePresence:
+			mic := true
+			cam := true
+			if msg.MicOn != nil {
+				mic = *msg.MicOn
 			}
-		case "answer":
-			if err := peer.HandleAnswer(msg.SDP); err != nil {
-				log.Printf("HandleAnswer: %v", err)
+			if msg.CamOn != nil {
+				cam = *msg.CamOn
 			}
-		case "ice":
-			if len(msg.Candidate) > 0 {
-				if err := peer.HandleICE(msg.Candidate); err != nil {
-					log.Printf("HandleICE: %v", err)
+			peer.SetPresence(mic, cam)
+			broadcastPeerPresence(room, peer, mic, cam)
+		case protocol.TypeSignal:
+			switch msg.Kind {
+			case "offer":
+				if err := peer.HandleOffer(msg.SDP); err != nil {
+					log.Printf("HandleOffer: %v", err)
+				}
+			case "answer":
+				if err := peer.HandleAnswer(msg.SDP); err != nil {
+					log.Printf("HandleAnswer: %v", err)
+				}
+			case "ice":
+				if len(msg.Candidate) > 0 {
+					if err := peer.HandleICE(msg.Candidate); err != nil {
+						log.Printf("HandleICE: %v", err)
+					}
 				}
 			}
+		default:
+			// ignore
 		}
 	}
 }
 
-func rosterFor(room *sfu.Room, except string) []protocol.PeerInfo {
+func rosterInfos(room *sfu.Room, except string) []protocol.PeerInfo {
 	others := room.Others(except)
 	out := make([]protocol.PeerInfo, 0, len(others))
 	for _, p := range others {
-		out = append(out, protocol.PeerInfo{ID: p.ID(), Name: p.Name()})
+		out = append(out, peerToInfo(p))
 	}
 	return out
 }
@@ -142,7 +176,10 @@ func rosterFor(room *sfu.Room, except string) []protocol.PeerInfo {
 func broadcastPeerJoined(room *sfu.Room, self *sfu.Peer) {
 	msg := protocol.ServerMessage{
 		Type: protocol.TypePeerJoined,
-		Peer: &protocol.PeerInfo{ID: self.ID(), Name: self.Name()},
+		Peer: func() *protocol.PeerInfo {
+			i := peerToInfo(self)
+			return &i
+		}(),
 	}
 	for _, p := range room.Others(self.ID()) {
 		_ = p.SendServer(msg)
@@ -152,6 +189,18 @@ func broadcastPeerJoined(room *sfu.Room, self *sfu.Peer) {
 func broadcastPeerLeft(room *sfu.Room, leftID string) {
 	msg := protocol.ServerMessage{Type: protocol.TypePeerLeft, PeerIDLeft: leftID}
 	for _, p := range room.Others(leftID) {
+		_ = p.SendServer(msg)
+	}
+}
+
+func broadcastPeerPresence(room *sfu.Room, self *sfu.Peer, mic, cam bool) {
+	msg := map[string]any{
+		"type":   string(protocol.TypePeerPresence),
+		"peerId": self.ID(),
+		"micOn":  mic,
+		"camOn":  cam,
+	}
+	for _, p := range room.Others(self.ID()) {
 		_ = p.SendServer(msg)
 	}
 }
